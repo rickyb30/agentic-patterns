@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.venv/
+*.log
+.DS_Store
+
+# local TLS root certificates, never commit
+*.crt
+*.pem
+*.cer
+docs/

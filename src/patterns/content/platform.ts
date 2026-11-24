@@ -1,0 +1,423 @@
+import type { Pattern } from '../types';
+
+export const PLATFORM_PATTERNS: Pattern[] = [
+  // ---------------------------------------------------------------------------
+  {
+    id: 'a2a-task',
+    category: 'platform',
+    title: 'Agent2Agent (A2A) task',
+    tagline: 'Discover a remote agent by its card, then delegate a stateful task.',
+    summary:
+      'A2A lets an agent delegate work to an opaque remote agent over HTTP with JSON-RPC: the client discovers the remote agent through its Agent Card (skills, endpoint, supported auth schemes), authenticates with standard HTTP mechanisms, and sends a message that creates a Task with a lifecycle. Unlike a tool call, the remote side is an agent with its own model, tools and state; it can stream progress, pause for more input, or finish asynchronously via push notifications. The protocol says how to talk, not whom to trust: credentials are obtained out of band and every remote output is untrusted input.',
+    whenToUse: [
+      'Delegating to an agent owned by another team or vendor whose internals you should not see.',
+      'Long-running work that needs task state, streaming progress or asynchronous completion.',
+    ],
+    risks: [
+      'Agent Card contents (descriptions, skill text) are attacker-controllable input to your planner.',
+      'Remote agent output is untrusted: treat artifacts like tool results, never as instructions.',
+      'Push-notification webhooks must authenticate the sender, or anyone can forge task updates.',
+      'User identity is usually not propagated; the remote agent acts with the client agent\'s credentials.',
+      'Specification still evolving; field names and method names have changed between versions.',
+    ],
+    actors: [
+      { id: 'user', label: 'User', kind: 'user' },
+      { id: 'client', label: 'Client agent', kind: 'agent', sub: 'A2A client' },
+      { id: 'idp', label: 'Authorization server', kind: 'idp', sub: 'OAuth 2.0' },
+      { id: 'remote', label: 'Remote agent', kind: 'agent', sub: 'A2A server' },
+      { id: 'webhook', label: 'Client webhook', kind: 'queue', sub: 'push notifications' },
+    ],
+    variants: [
+      {
+        id: 'stream-complete',
+        label: 'Discover, send, stream',
+        tone: 'neutral',
+        outcome: 'The client discovers the remote agent, authenticates with client credentials, and streams a task from submitted to completed.',
+        steps: [
+          { from: 'user', to: 'client', kind: 'call', label: '"Book travel for the offsite"', detail: 'The client agent decides this belongs to a specialist travel agent it does not implement itself.' },
+          {
+            from: 'client', to: 'remote', kind: 'call', label: 'GET /.well-known/agent-card.json',
+            detail: 'Discovery. The card is public metadata at https://travel.example.com/.well-known/agent-card.json; anything in it that will reach your model (skill descriptions) is untrusted text. Cache it and pin the expected origin.',
+          },
+          {
+            from: 'remote', to: 'client', kind: 'return', label: 'Agent Card: skills, auth',
+            detail: 'The card lists endpoint URL, capabilities (streaming, pushNotifications), skills, and security schemes in OpenAPI style.',
+            payload: '{"name": "Travel Agent", "url": "https://travel.example.com/a2a", "version": "1.2.0",\n "capabilities": {"streaming": true, "pushNotifications": true},\n "securitySchemes": {"oauth": {"type": "oauth2", "flows": {"clientCredentials": {"tokenUrl": "https://auth.example.com/token", "scopes": {"travel.book": "Book travel"}}}}},\n "security": [{"oauth": ["travel.book"]}],\n "skills": [{"id": "book-trip", "name": "Book trip", "description": "Books flights and hotels within policy"}]}',
+          },
+          {
+            from: 'client', to: 'idp', kind: 'token', label: 'client_credentials, scope=travel.book',
+            detail: 'Credentials are obtained out of band: A2A does not issue them. The client was registered with this authorization server beforehand and authenticates with private_key_jwt rather than a shared secret.',
+            payload: 'POST https://auth.example.com/token\ngrant_type=client_credentials&scope=travel.book\n&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer\n&client_assertion=<signed JWT>',
+          },
+          { from: 'idp', to: 'client', kind: 'token', label: 'access token (aud=travel)', detail: 'An app-only token: the remote agent knows which agent is calling, not which human asked. If per-user policy matters, use token exchange or pass user context explicitly and verifiably.' },
+          {
+            from: 'client', to: 'remote', kind: 'call', label: 'message/stream (JSON-RPC)',
+            detail: 'Sending a message creates a Task. message/stream returns a Server-Sent Events stream; message/send would return a single response.',
+            payload: 'POST https://travel.example.com/a2a\nAuthorization: Bearer <access token>\n{"jsonrpc": "2.0", "id": 1, "method": "message/stream",\n "params": {"message": {"role": "user", "messageId": "m-1", "parts": [{"kind": "text", "text": "Flights + hotel, 12 people, Lisbon, 3–5 March"}]}}}',
+          },
+          { from: 'remote', to: 'client', kind: 'event', label: 'SSE: task submitted', detail: 'The server assigns a taskId and contextId. The client must keep these to poll, resubscribe or continue the task.' },
+          { from: 'remote', to: 'remote', kind: 'think', label: 'plan, call own tools', detail: 'The remote agent runs its own loop with its own model and credentials. The client cannot see or control this, which is the point of an opaque agent and also the trust problem.' },
+          {
+            from: 'remote', to: 'client', kind: 'event', label: 'SSE: status working',
+            detail: 'Progress updates arrive as TaskStatusUpdateEvent messages on the stream.',
+            payload: 'data: {"jsonrpc": "2.0", "id": 1, "result": {"kind": "status-update", "taskId": "t-9c1", "contextId": "c-77",\n "status": {"state": "working", "message": {"role": "agent", "parts": [{"kind": "text", "text": "Searching flights…"}]}}, "final": false}}',
+          },
+          { from: 'remote', to: 'client', kind: 'event', label: 'SSE: artifact itinerary', detail: 'Outputs are Artifacts made of parts (text, file, structured data). They are untrusted input when passed to the client\'s model.' },
+          { from: 'remote', to: 'client', kind: 'event', label: 'SSE: completed (final)', detail: 'Terminal states are completed, failed, canceled and rejected. After final=true the stream closes; the task can still be fetched with tasks/get.' },
+          { from: 'client', to: 'user', kind: 'return', label: 'itinerary summary', detail: 'The client agent summarises the artifact. Log the remote taskId with your trace so incidents can be correlated across organisations.' },
+        ],
+      },
+      {
+        id: 'input-required',
+        label: 'Input-required round trip',
+        tone: 'neutral',
+        outcome: 'The remote agent pauses the task in input-required, the client gets the answer from the user and continues the same task, and completion arrives by push notification.',
+        steps: [
+          { from: 'user', to: 'client', kind: 'call', label: '"Book travel for the offsite"', detail: 'Same start; discovery and token acquisition are cached from earlier.' },
+          {
+            from: 'client', to: 'remote', kind: 'call', label: 'message/send + push config',
+            detail: 'The client registers a webhook so it does not need to hold a connection open for a task that may take hours. It includes a per-task value the webhook will expect back.',
+            payload: '{"jsonrpc": "2.0", "id": 2, "method": "message/send",\n "params": {"message": {"role": "user", "messageId": "m-2", "parts": [{"kind": "text", "text": "Flights + hotel, 12 people, Lisbon"}]},\n  "configuration": {"pushNotificationConfig": {"url": "https://planner.example.com/a2a/webhook", "token": "<per-task random value>"}}}}',
+          },
+          {
+            from: 'remote', to: 'client', kind: 'return', label: 'task state: input-required',
+            detail: 'The remote agent cannot proceed without a decision. The task is paused, not failed; it keeps its taskId and context.',
+            payload: '{"jsonrpc": "2.0", "id": 2, "result": {"kind": "task", "id": "t-9c2", "contextId": "c-78",\n "status": {"state": "input-required", "message": {"role": "agent", "parts": [{"kind": "text", "text": "Fares exceed policy by 18%. Approve premium economy or choose dates?"}]}}}}',
+          },
+          { from: 'client', to: 'client', kind: 'think', label: 'can I answer, or ask the user?', detail: 'A policy decision with budget impact should go to a human. The client must not let the remote agent\'s question steer it into approving on its own.' },
+          { from: 'client', to: 'user', kind: 'approval', label: '"Approve premium economy?"', detail: 'The human decides. This is where the client enforces its own approval rules, independent of the remote agent.' },
+          { from: 'user', to: 'client', kind: 'approval', label: '"No, shift dates by a day"', detail: 'The answer is relayed as a new message in the same task.' },
+          {
+            from: 'client', to: 'remote', kind: 'call', label: 'message/send with taskId',
+            detail: 'Supplying taskId and contextId continues the existing task rather than starting a new one.',
+            payload: '{"jsonrpc": "2.0", "id": 3, "method": "message/send",\n "params": {"message": {"role": "user", "messageId": "m-3", "taskId": "t-9c2", "contextId": "c-78",\n  "parts": [{"kind": "text", "text": "Do not upgrade. Shift to 4–6 March."}]}}}',
+          },
+          { from: 'remote', to: 'client', kind: 'return', label: 'state: working', detail: 'The send returns immediately; the rest happens asynchronously.' },
+          { from: 'remote', to: 'remote', kind: 'think', label: 'rebook within policy', detail: 'Remote work continues for minutes or hours.' },
+          {
+            from: 'remote', to: 'webhook', kind: 'event', label: 'POST task completed',
+            detail: 'The webhook must authenticate the notification (the echoed per-task value, or a signed JWT checked against the server\'s published keys) and should then fetch the task with tasks/get rather than trusting the body.',
+            payload: 'POST https://planner.example.com/a2a/webhook\nX-A2A-Notification-Token: <per-task random value>\n{"id": "t-9c2", "status": {"state": "completed"}}',
+          },
+          { from: 'webhook', to: 'client', kind: 'event', label: 'resume planner run', detail: 'The webhook enqueues a resume for the client agent\'s paused run; see the scheduled-agent pattern for making that durable.' },
+          { from: 'client', to: 'remote', kind: 'call', label: 'tasks/get t-9c2', detail: 'Fetch the authoritative task state and artifacts over the authenticated channel.' },
+          { from: 'client', to: 'user', kind: 'return', label: 'booked 4–6 March', detail: 'Done, with the human decision recorded in the client\'s audit trail.' },
+        ],
+      },
+    ],
+    sources: [
+      { title: 'A2A Protocol specification', url: 'https://a2a-protocol.org/latest/specification/' },
+      { title: 'IBM: What is the Agent2Agent protocol?', url: 'https://www.ibm.com/think/topics/agent2agent-protocol' },
+    ],
+    verify: [
+      'The Agent Card well-known path is /.well-known/agent-card.json in current versions; earlier versions used /.well-known/agent.json.',
+      'JSON-RPC method names are message/send, message/stream, tasks/get, tasks/cancel and tasks/resubscribe; later spec versions may rename them.',
+      'Task states include submitted, working, input-required, completed, failed, canceled, rejected, auth-required and unknown.',
+      'Push notification config field names (pushNotificationConfig, token) and the X-A2A-Notification-Token header match the current specification.',
+      'Message parts use the "kind" discriminator (text, file, data).',
+    ],
+    tags: ['A2A', 'Agent Card', 'JSON-RPC', 'SSE', 'push notifications', 'multi-agent'],
+  },
+
+  // ---------------------------------------------------------------------------
+  {
+    id: 'otel-genai-tracing',
+    category: 'platform',
+    title: 'Tracing agents with OpenTelemetry GenAI',
+    tagline: 'One trace per agent run: model and tool calls as child spans.',
+    summary:
+      'The OpenTelemetry GenAI semantic conventions give agent runs a vendor-neutral trace shape: an invoke_agent span wraps chat spans for each model call and execute_tool spans for each tool call, with standard attributes for model, token usage and tool name. Standard names mean any backend can compute cost per agent, latency per tool and failure rates without custom parsing. Prompt and completion content is off by default because it routinely contains personal and confidential data; enabling it turns your tracing backend into a sensitive data store.',
+    whenToUse: [
+      'Any production agent: debugging a wrong answer needs the exact sequence of model and tool calls.',
+      'Chargeback and capacity planning based on token usage per agent, team or model.',
+      'Multi-agent or A2A systems where a request crosses services and needs one trace ID.',
+    ],
+    risks: [
+      'Capturing message content copies prompts, retrieved documents and tool results into the trace store.',
+      'Conventions are in Development status: attribute names can change; pin the version you emit.',
+      'Missing context propagation splits one run into unrelated traces, especially across queues and A2A.',
+      'High-cardinality attributes (full prompts, user IDs as metric labels) inflate cost.',
+    ],
+    actors: [
+      { id: 'user', label: 'User', kind: 'user' },
+      { id: 'agent', label: 'Agent runtime', kind: 'agent', sub: 'OTel SDK instrumented' },
+      { id: 'llm', label: 'Model', kind: 'llm' },
+      { id: 'tool', label: 'Tool', kind: 'tool', sub: 'get_invoice' },
+      { id: 'collector', label: 'OTel Collector', kind: 'observability', sub: 'redact + export' },
+      { id: 'backend', label: 'Tracing backend', kind: 'observability' },
+    ],
+    variants: [
+      {
+        id: 'metadata-only',
+        label: 'Metadata only (default)',
+        tone: 'good',
+        outcome: 'The run produces one invoke_agent span with chat and execute_tool children carrying model, token and tool attributes, but no prompt content.',
+        steps: [
+          { from: 'user', to: 'agent', kind: 'call', label: '"Why was invoice 881 rejected?"', detail: 'Incoming request carries a W3C traceparent header if an upstream service started the trace.' },
+          {
+            from: 'agent', to: 'agent', kind: 'think', label: 'start span invoke_agent',
+            detail: 'The root span for the agent run. Its name is "invoke_agent {gen_ai.agent.name}".',
+            payload: 'span: invoke_agent billing-assistant  (kind=INTERNAL)\n  gen_ai.operation.name = "invoke_agent"\n  gen_ai.agent.name = "billing-assistant"\n  gen_ai.agent.id = "agt-12"\n  gen_ai.conversation.id = "conv-5521"',
+          },
+          {
+            from: 'agent', to: 'llm', kind: 'call', label: 'chat span (model call 1)',
+            detail: 'Each model call is a child span named "chat {gen_ai.request.model}", kind CLIENT.',
+            payload: 'span: chat gpt-4o  (kind=CLIENT, parent=invoke_agent)\n  gen_ai.operation.name = "chat"\n  gen_ai.provider.name = "azure.ai.openai"\n  gen_ai.request.model = "gpt-4o"\n  gen_ai.request.temperature = 0.2\n  server.address = "models.example.com"',
+          },
+          {
+            from: 'llm', to: 'agent', kind: 'return', label: 'tool call; usage recorded',
+            detail: 'Response attributes record what actually happened: response model, finish reason, token counts. These feed cost metrics.',
+            payload: '  gen_ai.response.model = "gpt-4o-2024-08-06"\n  gen_ai.response.finish_reasons = ["tool_calls"]\n  gen_ai.usage.input_tokens = 1840\n  gen_ai.usage.output_tokens = 42',
+          },
+          {
+            from: 'agent', to: 'tool', kind: 'call', label: 'execute_tool span',
+            detail: 'Tool execution is its own child span, so slow or failing tools show up separately from model latency.',
+            payload: 'span: execute_tool get_invoice  (kind=INTERNAL, parent=invoke_agent)\n  gen_ai.operation.name = "execute_tool"\n  gen_ai.tool.name = "get_invoice"\n  gen_ai.tool.call.id = "call_7Hq"\n  gen_ai.tool.type = "function"',
+          },
+          { from: 'tool', to: 'agent', kind: 'data', label: 'invoice record', detail: 'If the tool is a remote service, the traceparent header propagates and its own server spans join the same trace.' },
+          { from: 'agent', to: 'llm', kind: 'call', label: 'chat span (model call 2)', detail: 'A second chat span with its own usage. Summing usage across chat spans gives the cost of the run.' },
+          { from: 'llm', to: 'agent', kind: 'return', label: 'final answer', detail: 'finish_reasons ["stop"]. The invoke_agent span ends; errors would set error.type and span status.' },
+          { from: 'agent', to: 'user', kind: 'return', label: 'answer', detail: 'Return the trace ID to support staff or in a response header so a user report can be tied to the exact trace.' },
+          { from: 'agent', to: 'collector', kind: 'data', label: 'OTLP export (batched)', detail: 'Spans are exported asynchronously. The collector is the right place for attribute redaction, sampling and routing, centrally rather than per app.' },
+          { from: 'collector', to: 'backend', kind: 'data', label: 'spans, no message content', detail: 'The backend can chart tokens per agent and latency per tool from standard attributes, with no sensitive text stored.' },
+        ],
+      },
+      {
+        id: 'content-capture',
+        label: 'Content capture on',
+        tone: 'bad',
+        outcome: 'Turning on message content capture copies the user prompt, retrieved data and tool results into the tracing backend, which most teams do not govern as a sensitive store.',
+        steps: [
+          {
+            from: 'agent', to: 'agent', kind: 'think', label: 'env: capture content = true',
+            detail: 'Both the latest experimental conventions and content capture are opt-in. Content capture is often enabled in development and left on.',
+            payload: 'OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental\nOTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true',
+          },
+          { from: 'user', to: 'agent', kind: 'call', label: '"My card was charged twice"', detail: 'Users paste personal and payment data into chats: card digits, addresses, account numbers.' },
+          {
+            from: 'agent', to: 'llm', kind: 'call', label: 'chat span + input messages',
+            detail: 'The full input, including system prompt and history, is recorded on the span or as events.',
+            payload: '  gen_ai.input.messages = [{"role": "user", "parts": [{"type": "text", "content": "My card ending 0042 was charged twice, I live at 1 Example St"}]}]',
+          },
+          { from: 'agent', to: 'tool', kind: 'call', label: 'execute_tool + arguments', detail: 'Tool arguments and results (customer records, documents) are captured too when content capture covers tools.' },
+          { from: 'tool', to: 'agent', kind: 'data', label: 'customer record', detail: 'Data the user may not even be entitled to see in full, depending on the tool.' },
+          { from: 'agent', to: 'collector', kind: 'data', label: 'spans with content', detail: 'Without a redaction processor in the collector, everything passes through.' },
+          { from: 'collector', to: 'backend', kind: 'attack', label: 'PII lands in trace store', detail: 'Now subject to retention, access control and erasure obligations that tracing systems rarely meet. Prefer metadata-only in production, or redact in the collector and restrict access.' },
+        ],
+      },
+    ],
+    sources: [
+      { title: 'OpenTelemetry: Semantic conventions for GenAI agent spans', url: 'https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/' },
+      { title: 'OpenTelemetry: Semantic conventions for GenAI client spans', url: 'https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/' },
+    ],
+    verify: [
+      'GenAI semantic conventions are in Development status and the latest version is opted into with OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental.',
+      'The provider attribute is gen_ai.provider.name (it replaced gen_ai.system), and "azure.ai.openai" is a well-known value.',
+      'Content is recorded via gen_ai.input.messages / gen_ai.output.messages attributes; older versions used span events.',
+      'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT is an instrumentation-library setting, not part of the semantic conventions, and varies by language.',
+      'execute_tool spans are kind INTERNAL and invoke_agent may be CLIENT for remote agents or INTERNAL for in-process agents.',
+    ],
+    tags: ['OpenTelemetry', 'tracing', 'GenAI semantic conventions', 'token usage', 'observability', 'PII'],
+  },
+
+  // ---------------------------------------------------------------------------
+  {
+    id: 'model-gateway-fallback',
+    category: 'platform',
+    title: 'AI gateway with failover',
+    tagline: 'One front door for model calls: quotas, cache, failover, chargeback.',
+    summary:
+      'An AI gateway sits between applications and model deployments and applies controls the apps should not each reimplement: per-consumer token rate limits, semantic caching, load balancing across deployments and regions with failover on 429s, and token usage metrics. The gateway authenticates to model backends with a managed identity, so applications never hold model API keys and a compromised app cannot bypass quotas. The trade-off is a new critical path: gateway latency, misconfigured cache similarity and retry storms all become shared failures.',
+    whenToUse: [
+      'Several teams or agents share model capacity and need fair quotas and cost attribution.',
+      'Provisioned and pay-as-you-go deployments, or several regions, should be used as one pool.',
+      'You need central policy (content safety, logging) on every model call.',
+    ],
+    risks: [
+      'Semantic cache returns another user\'s answer to a similar but different question; partition by tenant and tune the threshold.',
+      'Retrying on all backends at once amplifies load during regional incidents; honour Retry-After and use circuit breakers.',
+      'Failover to a different region may cross data-residency boundaries.',
+      'Token limits estimated from the prompt can differ from billed usage; reconcile with reported usage.',
+    ],
+    actors: [
+      { id: 'agent', label: 'Agent app', kind: 'agent', sub: 'subscription: team-billing' },
+      { id: 'gw', label: 'AI gateway', kind: 'gateway', sub: 'API Management' },
+      { id: 'cache', label: 'Semantic cache', kind: 'memory', sub: 'Redis + embeddings' },
+      { id: 'idp', label: 'Managed identity', kind: 'idp', sub: 'Entra ID' },
+      { id: 'primary', label: 'Model (primary)', kind: 'llm', sub: 'PTU, region A' },
+      { id: 'secondary', label: 'Model (fallback)', kind: 'llm', sub: 'PAYG, region B' },
+      { id: 'obs', label: 'Metrics', kind: 'observability' },
+    ],
+    variants: [
+      {
+        id: 'cache-hit',
+        label: 'Semantic cache hit',
+        tone: 'good',
+        outcome: 'A near-duplicate prompt from the same consumer is served from cache without touching a model backend.',
+        steps: [
+          {
+            from: 'agent', to: 'gw', kind: 'call', label: 'POST chat/completions',
+            detail: 'The app authenticates to the gateway with its own Entra token (or a gateway subscription key). It holds no model key.',
+            payload: 'POST https://ai-gw.example.com/openai/deployments/chat/chat/completions?api-version=…\nAuthorization: Bearer <app token>\n{"messages": [{"role": "user", "content": "What is our refund window for EU orders?"}]}',
+          },
+          { from: 'gw', to: 'gw', kind: 'think', label: 'token limit check: ok', detail: 'Per-consumer tokens-per-minute is checked first so that cached responses still count, or deliberately do not, depending on policy order.' },
+          {
+            from: 'gw', to: 'cache', kind: 'call', label: 'lookup by embedding, partition',
+            detail: 'The prompt is embedded and compared to cached prompts within the consumer\'s partition. The similarity threshold trades hit rate against wrong answers.',
+            payload: '<azure-openai-semantic-cache-lookup score-threshold="0.05"\n    embeddings-backend-id="embeddings" embeddings-backend-auth="system-assigned">\n  <vary-by>@(context.Subscription.Id)</vary-by>\n</azure-openai-semantic-cache-lookup>',
+          },
+          { from: 'cache', to: 'gw', kind: 'return', label: 'hit: distance 0.03', detail: 'A prior prompt "EU refund window?" is close enough. Fine for FAQ-style prompts; wrong for prompts whose answer depends on context or retrieved data.' },
+          { from: 'gw', to: 'obs', kind: 'data', label: 'metric: cache hit, 0 tokens', detail: 'Hit rate and tokens saved are tracked per consumer, which justifies (or disproves) the cache.' },
+          { from: 'gw', to: 'agent', kind: 'return', label: 'cached completion', detail: 'Latency drops from seconds to milliseconds. Agents with tool calls and per-user context rarely hit, so measure before assuming savings.' },
+        ],
+      },
+      {
+        id: 'failover-429',
+        label: '429 failover',
+        tone: 'neutral',
+        outcome: 'The primary deployment is throttled; the gateway trips its circuit, honours Retry-After, and serves the call from the fallback region.',
+        steps: [
+          { from: 'agent', to: 'gw', kind: 'call', label: 'POST chat/completions', detail: 'Same call, cache miss this time.' },
+          {
+            from: 'gw', to: 'gw', kind: 'think', label: 'token limit: 3.2k of 50k TPM',
+            detail: 'Per-consumer limit based on estimated prompt tokens. Exceeding it returns 429 to this consumer only, protecting the shared backend from one noisy agent.',
+            payload: '<azure-openai-token-limit counter-key="@(context.Subscription.Id)"\n    tokens-per-minute="50000" estimate-prompt-tokens="true"\n    remaining-tokens-header-name="x-remaining-tokens" />',
+          },
+          { from: 'gw', to: 'idp', kind: 'token', label: 'managed identity token', detail: 'The gateway gets an Entra token for the model resource with its own identity. Key-based auth can then be disabled on the model resource entirely.' },
+          { from: 'idp', to: 'gw', kind: 'token', label: 'token (aud=cognitiveservices)', detail: 'Cached and refreshed by the gateway, not by each app.' },
+          { from: 'gw', to: 'primary', kind: 'call', label: 'forward to primary (priority 1)', detail: 'The backend pool prefers the provisioned deployment because its capacity is already paid for.' },
+          {
+            from: 'primary', to: 'gw', kind: 'return', label: '429 Retry-After: 12',
+            detail: 'Provisioned capacity is saturated.',
+            payload: 'HTTP/1.1 429 Too Many Requests\nRetry-After: 12\n{"error": {"code": "429", "message": "Requests to the deployment have exceeded capacity."}}',
+          },
+          { from: 'gw', to: 'gw', kind: 'block', label: 'circuit open on primary for 12s', detail: 'The circuit breaker uses Retry-After as the trip duration, so other requests skip the primary instead of each discovering the 429 again.' },
+          { from: 'gw', to: 'secondary', kind: 'call', label: 'retry on fallback (priority 2)', detail: 'Retry on a different backend, once. Pay-as-you-go in another region costs more per token and may be outside the data boundary; that is a policy decision, not a default.' },
+          { from: 'secondary', to: 'gw', kind: 'return', label: '200 + usage', detail: 'The response includes usage with actual prompt and completion tokens.' },
+          {
+            from: 'gw', to: 'obs', kind: 'data', label: 'emit token metrics by consumer',
+            detail: 'Token metrics are dimensioned by consumer and backend for chargeback and for spotting which teams drive failover.',
+            payload: '<azure-openai-emit-token-metric namespace="genai">\n  <dimension name="Subscription ID" />\n  <dimension name="Backend ID" />\n</azure-openai-emit-token-metric>\n→ team-billing, backend=region-b: prompt=3190, completion=211',
+          },
+          { from: 'gw', to: 'agent', kind: 'return', label: 'completion', detail: 'The app saw one slower success instead of a 429. It never learned which backend served it unless the gateway adds a header.' },
+        ],
+      },
+    ],
+    sources: [
+      { title: 'Microsoft Learn: AI gateway capabilities in Azure API Management', url: 'https://learn.microsoft.com/en-us/azure/api-management/genai-gateway-capabilities' },
+      { title: 'Microsoft Learn: Backends, load balancing and circuit breaker', url: 'https://learn.microsoft.com/en-us/azure/api-management/backends' },
+    ],
+    verify: [
+      'API Management policy names: azure-openai-token-limit (and llm-token-limit), azure-openai-semantic-cache-lookup/-store, azure-openai-emit-token-metric.',
+      'Backend pools support priority and weight, and the circuit breaker can honour Retry-After for trip duration.',
+      'Semantic cache score-threshold semantics (lower means stricter) and the vary-by element are as shown.',
+    ],
+    tags: ['AI gateway', 'rate limiting', 'semantic cache', 'failover', 'managed identity', 'chargeback'],
+  },
+
+  // ---------------------------------------------------------------------------
+  {
+    id: 'scheduled-agent',
+    category: 'platform',
+    title: 'Scheduled agent with durable execution',
+    tagline: 'No user present: checkpoint every step, never repeat a side effect.',
+    summary:
+      'Background agents start from a cron trigger or queue message and run as a workload identity, so there is no user token to borrow and every permission must be granted to the workload explicitly. Durable execution frameworks record each completed step (activity) in a history; after a crash the orchestrator replays from the history and resumes at the first unfinished step instead of rerunning side effects. Durability guarantees at-least-once activity execution, so writes still need idempotency keys for the window between "side effect done" and "step recorded".',
+    whenToUse: [
+      'Nightly or event-driven agents: triage, reconciliation, report generation.',
+      'Runs that take minutes to days, wait on humans or external callbacks, or call flaky APIs.',
+    ],
+    risks: [
+      'Without durability, a retry after a crash repeats emails, tickets or payments.',
+      'Workload identity tends to accumulate broad permissions because no user scope narrows it.',
+      'Orchestrator code must be deterministic: model calls, clocks and random values belong in activities.',
+      'Activities are at-least-once; external writes still need idempotency keys.',
+      'Long histories (many model turns) slow replay; use continue-as-new or sub-orchestrations.',
+    ],
+    actors: [
+      { id: 'trigger', label: 'Queue / cron', kind: 'queue', sub: 'timer trigger' },
+      { id: 'orch', label: 'Orchestrator', kind: 'agent', sub: 'durable workflow' },
+      { id: 'history', label: 'History store', kind: 'queue', sub: 'event-sourced state' },
+      { id: 'llm', label: 'Model', kind: 'llm' },
+      { id: 'tickets', label: 'Ticket API', kind: 'tool' },
+      { id: 'mail', label: 'Mail API', kind: 'tool' },
+    ],
+    variants: [
+      {
+        id: 'durable-resume',
+        label: 'Durable: crash and resume',
+        tone: 'good',
+        outcome: 'The worker crashes after sending the email; on restart, history replay skips completed steps and the run finishes with exactly one email and one ticket.',
+        steps: [
+          {
+            from: 'trigger', to: 'orch', kind: 'event', label: 'cron 06:00: start run',
+            detail: 'The instance ID is derived from the schedule (date), so a duplicate trigger finds the existing instance instead of starting a second run.',
+            payload: '{"instanceId": "triage-2026-11-23", "identity": "mi-triage-agent", "input": {"queue": "incidents", "since": "2026-11-22T06:00Z"}}',
+          },
+          { from: 'orch', to: 'history', kind: 'data', label: 'record: started', detail: 'Every decision and activity result is appended to the history. The orchestrator\'s own state is rebuilt from it, never held only in memory.' },
+          { from: 'orch', to: 'llm', kind: 'call', label: 'activity: classify incidents', detail: 'The model call is an activity, not orchestrator code, because it is non-deterministic and must not be re-executed on replay.' },
+          {
+            from: 'llm', to: 'history', kind: 'data', label: 'record: classify result',
+            detail: 'The output is stored, so replay reuses the exact same classification rather than calling the model again and possibly getting a different answer.',
+            payload: '{"eventType": "TaskCompleted", "name": "ClassifyIncidents", "result": {"P1": ["INC-441"], "P3": ["INC-442", "INC-443"]}}',
+          },
+          {
+            from: 'orch', to: 'tickets', kind: 'call', label: 'create ticket, idempotency key',
+            detail: 'The key is derived from instance ID and step, so a retried activity creates the ticket once. Durability covers the orchestrator; idempotency covers the activity.',
+            payload: 'POST https://tickets.example.com/api/tickets\nAuthorization: Bearer <workload identity token>\nIdempotency-Key: triage-2026-11-23:create-ticket:INC-441\n{"title": "P1: payment API errors", "assignee": "oncall"}',
+          },
+          { from: 'tickets', to: 'history', kind: 'data', label: 'record: ticket T-9001', detail: 'Step recorded as completed.' },
+          { from: 'orch', to: 'mail', kind: 'call', label: 'send email, idempotency key', detail: 'Send the on-call summary, also keyed. The mail API or an outbox table dedupes on the key.' },
+          { from: 'mail', to: 'orch', kind: 'return', label: '202 accepted', detail: 'The side effect has happened.' },
+          { from: 'orch', to: 'orch', kind: 'block', label: 'worker crashes', detail: 'The process dies before the activity result is recorded. This is exactly the at-least-once window.' },
+          { from: 'trigger', to: 'orch', kind: 'event', label: 'new worker picks up instance', detail: 'The work item is still in the control queue, so another worker takes it.' },
+          {
+            from: 'history', to: 'orch', kind: 'data', label: 'replay history',
+            detail: 'The orchestrator function re-runs from the top, but completed activities return their recorded results instantly. Classification and ticket creation are not repeated.',
+            payload: 'replay: ClassifyIncidents → cached\nreplay: CreateTicket(INC-441) → cached T-9001\nnext:   SendEmail → not in history, schedule',
+          },
+          { from: 'orch', to: 'mail', kind: 'call', label: 'send email (same key)', detail: 'The email activity is re-executed because its completion was never recorded.' },
+          { from: 'mail', to: 'orch', kind: 'return', label: '200 duplicate, not resent', detail: 'The idempotency key makes the retry harmless. Without it, durability alone would still have sent two emails.' },
+          { from: 'orch', to: 'history', kind: 'data', label: 'record: completed', detail: 'The run ends with exactly-once effects from the outside view, built from at-least-once execution plus idempotent writes.' },
+        ],
+      },
+      {
+        id: 'no-durability',
+        label: 'Plain retry, no durability',
+        tone: 'bad',
+        outcome: 'A crash after the email causes the queue to redeliver the message; the agent reruns from scratch and sends a second email and a duplicate ticket.',
+        steps: [
+          { from: 'trigger', to: 'orch', kind: 'event', label: 'queue message: start run', detail: 'A plain function triggered by a queue message, with the agent loop inside it.' },
+          { from: 'orch', to: 'llm', kind: 'call', label: 'classify incidents', detail: 'Result held only in process memory.' },
+          { from: 'orch', to: 'tickets', kind: 'call', label: 'create ticket (no key)', detail: 'Ticket T-9001 is created.' },
+          { from: 'orch', to: 'mail', kind: 'call', label: 'send email (no key)', detail: 'The on-call engineer receives the summary.' },
+          { from: 'orch', to: 'orch', kind: 'block', label: 'crash before message ack', detail: 'The queue message was never completed, so the visibility timeout expires and it is redelivered.' },
+          { from: 'trigger', to: 'orch', kind: 'event', label: 'message redelivered', detail: 'At-least-once delivery, as designed. The function has no memory of the first attempt.' },
+          { from: 'orch', to: 'llm', kind: 'call', label: 'classify again', detail: 'A second model call costs tokens and may even classify differently, so the rerun is not a faithful repeat.' },
+          {
+            from: 'orch', to: 'tickets', kind: 'attack', label: 'duplicate ticket T-9002',
+            detail: 'Side effect repeated. Without an idempotency key the ticket API has no way to recognise the retry.',
+            payload: 'POST https://tickets.example.com/api/tickets\n{"title": "P1: payment API errors", "assignee": "oncall"}\n→ 201 Created {"id": "T-9002"}   # T-9001 already exists for INC-441',
+          },
+          {
+            from: 'orch', to: 'mail', kind: 'attack', label: 'second email sent',
+            detail: 'On-call is paged twice. With payments or customer email, the duplicate is an incident.',
+            payload: 'mail log:\n06:01:12 to=oncall@example.com subject="P1 triage summary" id=msg-1\n06:03:40 to=oncall@example.com subject="P1 triage summary" id=msg-2',
+          },
+        ],
+      },
+    ],
+    sources: [
+      { title: 'Microsoft Learn: Durable Functions overview', url: 'https://learn.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-overview' },
+      { title: 'Temporal: Workflows', url: 'https://docs.temporal.io/workflows' },
+      { title: 'Temporal: Activities', url: 'https://docs.temporal.io/activities' },
+    ],
+    verify: [
+      'Durable Functions and Temporal both replay orchestrator/workflow code from an event history and require it to be deterministic.',
+      'Both execute activities at-least-once and recommend idempotent activities.',
+      'The history event name TaskCompleted is a Durable Task Framework detail and is illustrative here.',
+      'The Temporal documentation URLs are current.',
+    ],
+    tags: ['durable execution', 'workflow', 'idempotency', 'workload identity', 'cron', 'queue'],
+  },
+];

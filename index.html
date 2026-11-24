@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="A simulated, interactive explorer of how AI agents work end to end: identity on every hop (OBO, M2M, managed identity, API key, federation), gateways, and a library of animated agent patterns covering orchestration, MCP, A2A, RAG and security." />
+    <title>Agent Path Explorer</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <h1><span class="logo" aria-hidden="true"></span>Agent Path Explorer</h1>
+        <p class="tagline">How agent requests travel, whose identity each hop carries, and the patterns agents are built from. Everything is simulated.</p>
+      </div>
+      <button id="theme-btn" type="button" class="theme-btn" aria-label="Toggle colour theme" title="Toggle theme">◐</button>
+    </header>
+
+    <section id="library-section" class="section" aria-labelledby="library-h">
+      <div class="section-head">
+        <div>
+          <h2 id="library-h">Pattern library</h2>
+          <p class="hint">How agents are built, secured and attacked. Pick a card: most play as an animated sequence diagram you can step through; <strong>Identity paths</strong> is a live map you configure yourself.</p>
+        </div>
+      </div>
+      <div id="library"></div>
+    </section>
+
+    <div id="identity-explorer" class="explorer" hidden>
+      <div class="explorer-head">
+        <div class="stage-title">
+          <span class="card-cat c-identity">Identity <span class="live-badge">interactive</span></span>
+          <h3>Identity paths</h3>
+          <p class="stage-summary">Pick one node per column, an identity mode and the gateway modes, then run the path. Each hop shows the credential on the wire, whose identity it carries and what the receiving system checks. Click a gateway node to cycle its mode.</p>
+        </div>
+        <div class="controls">
+          <label class="tour-picker">Guided tour
+            <select id="tour-select"><option value="">— free explore —</option></select>
+          </label>
+          <button id="run-btn" type="button" class="primary">▶ Run</button>
+          <button id="step-btn" type="button">⏭ Step</button>
+        </div>
+      </div>
+      <nav class="identity-bar" id="identity-bar" aria-label="Identity mode"></nav>
+      <div class="gateway-bar" id="gateway-bar" aria-label="Gateways"></div>
+      <section class="tour-panel" id="tour-panel" hidden></section>
+      <div class="layout">
+        <section class="map-wrap" aria-label="Agent path map">
+          <svg id="map" viewBox="0 0 1400 630" role="group" aria-label="Components and active path"></svg>
+          <div class="legend" id="legend"></div>
+          <div class="token-card" id="token-card" aria-live="polite"></div>
+        </section>
+        <aside class="inspector" id="inspector" aria-live="polite"></aside>
+      </div>
+    </div>
+
+    <footer class="footer">
+      Simulated for learning: no real service is called and every token is a fictional sample.
+      Behaviours marked <span class="badge verify">unverified</span> have not been checked against current vendor docs.
+      Code MIT · content CC BY 4.0.
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
