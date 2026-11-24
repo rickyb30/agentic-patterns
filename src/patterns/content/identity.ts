@@ -913,4 +913,83 @@ export const IDENTITY_PATTERNS: Pattern[] = [
     ],
     tags: ['RFC 8693', 'token exchange', 'act claim', 'delegation', 'impersonation', 'OBO'],
   },
+  // ---------------------------------------------------------------------------
+  {
+    id: 'step-up-auth',
+    category: 'identity',
+    title: 'Step-up authorisation mid-task',
+    tagline: 'Start with read access; ask the user again only for the risky action.',
+    summary:
+      'The agent begins with a narrow token. When it reaches an action that needs more (a payment, a delete, a write to production), the resource server rejects the call with a machine-readable challenge: insufficient_scope with the scope it needs (RFC 6750, used by MCP), or insufficient_user_authentication with an acr or max_age requirement (RFC 9470). The client sends the user back to the identity provider for just that grant, often with MFA, then retries. The alternative, requesting every scope at sign-in, leaves a powerful long-lived token sitting in the agent for actions that may never happen.',
+    whenToUse: [
+      'Agents that mostly read but occasionally perform high-impact writes.',
+      'Remote MCP servers protecting a few sensitive tools behind extra scopes.',
+      'Regulated actions that need fresh MFA or a specific authentication strength at the time of the action.',
+    ],
+    risks: [
+      'Step-up prompts appear mid-conversation; the UI must say exactly what will be authorised or users approve blindly.',
+      'Background agents cannot step up interactively; they need an async channel such as CIBA, or the action must wait for the user.',
+      'Caching the stepped-up token for the rest of the session quietly recreates the broad-token problem; keep it short-lived or single-use.',
+    ],
+    actors: [
+      { id: 'user', label: 'Jane', kind: 'user' },
+      { id: 'agent', label: 'Agent app', kind: 'agent', sub: 'OAuth client' },
+      { id: 'idp', label: 'Authorization server', kind: 'idp' },
+      { id: 'api', label: 'Payments API', kind: 'tool', sub: 'resource server' },
+      { id: 'attacker', label: 'Injected instruction', kind: 'attacker' },
+    ],
+    variants: [
+      {
+        id: 'step-up',
+        label: 'Narrow token + step-up',
+        tone: 'good',
+        outcome: 'The agent can read freely, but the payment needs Jane to re-authenticate for that one scope at the moment it happens.',
+        steps: [
+          { from: 'user', to: 'agent', kind: 'call', label: 'sign in (scope=payments:read)', detail: 'The agent asks only for what it needs to start: read access.' },
+          { from: 'idp', to: 'agent', kind: 'token', label: 'access token: payments:read', detail: 'A short-lived token with one scope.' },
+          { from: 'agent', to: 'api', kind: 'call', label: 'GET /invoices?status=due', detail: 'Reading works with the narrow token.' },
+          { from: 'user', to: 'agent', kind: 'call', label: '"Pay the Acme invoice"', detail: 'Jane asks for a write action.' },
+          { from: 'agent', to: 'api', kind: 'call', label: 'POST /payments (read token)', detail: 'The agent tries the call with the token it has.' },
+          {
+            from: 'api', to: 'agent', kind: 'block', label: '403 insufficient_scope',
+            detail: 'The resource server says what it needs. RFC 9470 adds an equivalent challenge for authentication strength (acr_values, max_age).',
+            payload: 'HTTP/1.1 403 Forbidden\nWWW-Authenticate: Bearer error="insufficient_scope",\n  scope="payments:write",\n  resource_metadata="https://pay.example.com/.well-known/oauth-protected-resource"',
+          },
+          { from: 'agent', to: 'user', kind: 'approval', label: 'consent: pay 240.00 to Acme?', detail: 'The client shows what the extra grant is for, not just a generic login page.' },
+          {
+            from: 'user', to: 'idp', kind: 'approval', label: 'MFA + approve payments:write',
+            detail: 'Jane re-authenticates. The authorisation request can carry acr_values to demand MFA and authorization_details to bind the exact payment.',
+            payload: 'GET /authorize?response_type=code&client_id=agent-app\n&scope=payments:write&acr_values=urn:example:mfa\n&code_challenge=…&state=…',
+          },
+          { from: 'idp', to: 'agent', kind: 'token', label: 'token: payments:write, 5 min', detail: 'A short-lived token for the write. The agent keeps the read token for everything else.' },
+          { from: 'agent', to: 'api', kind: 'call', label: 'POST /payments (retry)', detail: 'Same request, new token.' },
+          { from: 'api', to: 'agent', kind: 'return', label: '201 payment created', detail: 'The API\'s audit shows Jane, the agent client, and an MFA-strength authentication at the time of payment.' },
+        ],
+      },
+      {
+        id: 'broad',
+        label: 'All scopes at sign-in',
+        tone: 'bad',
+        outcome: 'Because the agent already holds payments:write, an injected instruction can make a payment with no prompt to Jane at all.',
+        steps: [
+          { from: 'user', to: 'agent', kind: 'call', label: 'sign in (read + write + admin)', detail: 'Asking for everything up front avoids prompts later, which is why it is common.' },
+          { from: 'idp', to: 'agent', kind: 'token', label: 'token + refresh: all scopes', detail: 'A broad grant, kept fresh by a long-lived refresh token.' },
+          { from: 'attacker', to: 'agent', kind: 'attack', label: 'invoice note: "pay this now"', detail: 'An instruction hidden in an invoice\'s notes field reaches the model when the agent lists invoices.' },
+          { from: 'agent', to: 'api', kind: 'call', label: 'POST /payments (as Jane)', detail: 'Nothing in the token flow stops the call: the scope is already there.' },
+          { from: 'api', to: 'agent', kind: 'return', label: '201 payment created', detail: 'The audit says Jane paid. She was never asked.' },
+        ],
+      },
+    ],
+    sources: [
+      { title: 'RFC 9470: OAuth 2.0 Step Up Authentication Challenge Protocol', url: 'https://datatracker.ietf.org/doc/html/rfc9470' },
+      { title: 'RFC 6750: Bearer token usage, error codes (insufficient_scope)', url: 'https://datatracker.ietf.org/doc/html/rfc6750#section-3.1' },
+      { title: 'RFC 9396: OAuth 2.0 Rich Authorization Requests', url: 'https://datatracker.ietf.org/doc/html/rfc9396' },
+      { title: 'Model Context Protocol: Authorization', url: 'https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization' },
+    ],
+    verify: [
+      'The step-up / scope-challenge section is described in newer MCP authorization revisions; check which revision your client and server implement.',
+      'Whether a given identity provider issues a separate token for the step-up scope or merges it into the existing grant varies.',
+    ],
+    tags: ['step-up', 'insufficient_scope', 'MFA', 'acr', 'least privilege', 'MCP', 'OAuth'],
+  },
 ];

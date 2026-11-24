@@ -420,4 +420,75 @@ export const PLATFORM_PATTERNS: Pattern[] = [
     ],
     tags: ['durable execution', 'workflow', 'idempotency', 'workload identity', 'cron', 'queue'],
   },
+  // ---------------------------------------------------------------------------
+  {
+    id: 'evals-in-ci',
+    category: 'platform',
+    title: 'Evals as a deployment gate',
+    tagline: 'Every prompt or model change runs a golden set before it ships.',
+    summary:
+      'Prompts, tools and model versions are code: changing them changes behaviour. An evaluation suite runs on every change, against a fixed set of real cases with known good outcomes. Cheap deterministic checks (did it call the right tool, is the output valid JSON, did it refuse what it should) run first; an LLM judge scores the open-ended parts against a written rubric. The judge itself is checked against human labels, because a judge that agrees with everything turns the gate into theatre.',
+    whenToUse: [
+      'Before any change to a system prompt, tool description, retrieval setup or model version reaches production.',
+      'When upgrading models: run the same suite on old and new to see what moved, not just the average.',
+    ],
+    risks: [
+      'Judges share biases with the model under test, prefer longer answers and favour their own outputs; use a rubric, a different model or human calibration.',
+      'Golden sets go stale; feed real production failures back into them.',
+      'Averages hide regressions; gate on per-slice results (for example, refund questions) as well as the overall score.',
+      'Non-determinism: run each case more than once, or at temperature 0 where possible, before calling a change a regression.',
+    ],
+    actors: [
+      { id: 'dev', label: 'Developer', kind: 'user', sub: 'opens a PR' },
+      { id: 'ci', label: 'CI pipeline', kind: 'queue' },
+      { id: 'golden', label: 'Golden set', kind: 'data', sub: '120 labelled cases' },
+      { id: 'agent', label: 'Agent under test', kind: 'agent' },
+      { id: 'judge', label: 'Judge model', kind: 'llm', sub: 'rubric-based' },
+      { id: 'dash', label: 'Eval report', kind: 'observability' },
+    ],
+    variants: [
+      {
+        id: 'gated',
+        label: 'Rubric judge + slices',
+        tone: 'good',
+        outcome: 'A prompt tweak that improves tone but breaks refund-policy answers is caught and blocked before merge.',
+        steps: [
+          { from: 'dev', to: 'ci', kind: 'call', label: 'PR: shorten system prompt', detail: 'A small wording change that looks harmless in review.' },
+          { from: 'ci', to: 'golden', kind: 'data', label: 'load 120 cases, 6 slices', detail: 'Cases are grouped by intent so a regression in one area is visible even if the average holds.' },
+          { from: 'ci', to: 'agent', kind: 'call', label: 'run each case x3', group: 1, detail: 'Repeated runs separate real regressions from sampling noise.' },
+          { from: 'ci', to: 'ci', kind: 'think', label: 'deterministic checks', group: 1, detail: 'Right tool called, arguments valid, schema-correct output, refusals where required. These are exact and cheap.', payload: 'assert tool_calls[0].name == "lookup_order"\nassert json_schema_valid(output, RefundDecision)' },
+          {
+            from: 'ci', to: 'judge', kind: 'call', label: 'score vs rubric (blind)',
+            detail: 'The judge sees the case, the reference answer and a rubric, not the agent\'s own reasoning or which version produced it.',
+            payload: 'Rubric (1-5): states the 30-day limit correctly; does not promise a refund outside policy; cites the order number.',
+          },
+          { from: 'judge', to: 'ci', kind: 'return', label: 'scores per case', detail: 'The judge was calibrated earlier against 50 human-labelled cases (agreement tracked as a metric).' },
+          { from: 'ci', to: 'dash', kind: 'data', label: 'report: refunds slice 0.91→0.74', detail: 'Overall score dropped only 2 points; the refunds slice dropped 17.' },
+          { from: 'ci', to: 'dev', kind: 'block', label: 'gate failed: refunds < 0.85', detail: 'The PR cannot merge until the slice recovers or someone explicitly accepts the regression.' },
+        ],
+      },
+      {
+        id: 'rubber-stamp',
+        label: 'Agreeable judge, one average',
+        tone: 'bad',
+        outcome: 'The judge rates nearly everything highly and only the average is checked, so the regression ships and is found by customers.',
+        steps: [
+          { from: 'dev', to: 'ci', kind: 'call', label: 'PR: shorten system prompt', detail: 'Same change.' },
+          { from: 'ci', to: 'agent', kind: 'call', label: 'run each case once', detail: 'One sample per case; noise and regressions look the same.' },
+          { from: 'ci', to: 'judge', kind: 'call', label: '"Is this answer good? 1-10"', detail: 'No rubric, no reference answer, and the judge is the same model as the agent, which tends to approve its own style.' },
+          { from: 'judge', to: 'ci', kind: 'return', label: 'average 9.4 / 10', detail: 'Confident, fluent, wrong answers score well.' },
+          { from: 'ci', to: 'dev', kind: 'return', label: 'gate passed', detail: 'The refund-policy regression merges and ships.' },
+        ],
+      },
+    ],
+    sources: [
+      { title: 'Anthropic docs: Define success criteria and build evaluations', url: 'https://docs.anthropic.com/en/docs/test-and-evaluate/develop-tests' },
+      { title: 'Zheng et al., Judging LLM-as-a-judge with MT-Bench and Chatbot Arena (arXiv)', url: 'https://arxiv.org/abs/2306.05685' },
+      { title: 'OpenTelemetry: Semantic conventions for generative AI', url: 'https://opentelemetry.io/docs/specs/semconv/gen-ai/' },
+    ],
+    verify: [
+      'Anthropic evaluation docs URL may have moved to the newer docs site path.',
+    ],
+    tags: ['evals', 'CI', 'LLM-as-judge', 'regression', 'golden set', 'quality gate'],
+  },
 ];

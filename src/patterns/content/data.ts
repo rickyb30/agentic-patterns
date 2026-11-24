@@ -430,4 +430,87 @@ export const DATA_PATTERNS: Pattern[] = [
     ],
     tags: ['memory', 'long-term memory', 'checkpointer', 'memory poisoning', 'retention', 'privacy'],
   },
+  // ---------------------------------------------------------------------------
+  {
+    id: 'rls-pushdown',
+    category: 'data',
+    title: 'Row-level security pushdown',
+    tagline: 'Let the warehouse filter rows for the real user, not the agent.',
+    summary:
+      'When an agent queries a warehouse, the question is who the warehouse thinks is asking. If the user identity reaches Snowflake or Databricks (through OBO or External OAuth, often via an API gateway), the platform\'s own row access policies and column masks filter the result before it ever leaves the warehouse. If the agent connects as a shared service account, the warehouse returns everything and the only filter left is the agent\'s prompt, which is not a security control.',
+    whenToUse: [
+      'Any agent that answers questions over governed tables where different users may see different rows (region, customer, cost centre).',
+      'When the warehouse already has row access policies or masks for human users and you want the agent to inherit them unchanged.',
+      'Text-to-SQL agents: generated SQL is unpredictable, so the filter must live below the SQL, not in it.',
+    ],
+    risks: [
+      'Policies keyed on CURRENT_ROLE() rather than the user can still over-share if every caller lands in one broad role.',
+      'Result caches, materialised views or extracts built by a service account can bypass the policy that protects the base table.',
+      'Pushdown needs a user token at query time; scheduled or background agents have none, so they need a separate, narrower design.',
+      'Aggregates over policy-filtered data can still leak through small counts; masking and minimum group sizes are separate controls.',
+    ],
+    actors: [
+      { id: 'user', label: 'Jane', kind: 'user', sub: 'EMEA sales analyst' },
+      { id: 'agent', label: 'Analytics agent', kind: 'agent' },
+      { id: 'gw', label: 'API gateway', kind: 'gateway', sub: 'OBO exchange' },
+      { id: 'idp', label: 'Identity provider', kind: 'idp', sub: 'Entra ID' },
+      { id: 'wh', label: 'Warehouse', kind: 'data', sub: 'Snowflake / Databricks' },
+    ],
+    variants: [
+      {
+        id: 'pushdown',
+        label: 'User identity reaches the warehouse',
+        tone: 'good',
+        outcome: 'The warehouse sees jane@example.com, applies its row policy, and only EMEA rows ever leave it, whatever SQL the agent wrote.',
+        steps: [
+          { from: 'user', to: 'agent', kind: 'call', label: '"Top 5 deals this quarter"', detail: 'Jane is signed in, so the agent holds a token issued to it for Jane (aud = the agent API).' },
+          { from: 'agent', to: 'gw', kind: 'call', label: 'SQL + Jane\'s token (aud=gateway)', detail: 'The agent does not hold warehouse credentials. It sends the generated SQL to the gateway with a token for the gateway audience.' },
+          {
+            from: 'gw', to: 'idp', kind: 'token', label: 'OBO: Jane → warehouse audience',
+            detail: 'The gateway acts as the OBO middle tier and exchanges the inbound token for one whose audience is the warehouse\'s External OAuth integration.',
+            payload: 'grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer\n&assertion=eyJ…(aud=api://gateway)\n&requested_token_use=on_behalf_of\n&scope=api://warehouse/session:role-any',
+          },
+          { from: 'idp', to: 'gw', kind: 'token', label: 'token: upn=jane, aud=warehouse', detail: 'Same user, new audience. The warehouse maps the upn claim to its user JANE.' },
+          {
+            from: 'gw', to: 'wh', kind: 'call', label: 'query as JANE',
+            detail: 'The session user is Jane. Any SQL runs under her grants and the table\'s row access policy.',
+            payload: 'SELECT deal, region, amount FROM sales.deals\nWHERE close_qtr = \'2026-Q4\' ORDER BY amount DESC LIMIT 5;',
+          },
+          {
+            from: 'wh', to: 'wh', kind: 'think', label: 'row access policy filters rows',
+            detail: 'The policy is evaluated inside the warehouse for every query, including ones nobody anticipated.',
+            payload: 'CREATE ROW ACCESS POLICY sales.region_rap AS (region STRING) RETURNS BOOLEAN ->\n  EXISTS (SELECT 1 FROM sec.user_regions m\n          WHERE m.user_name = CURRENT_USER() AND m.region = region);',
+          },
+          { from: 'wh', to: 'gw', kind: 'data', label: '5 rows, all EMEA', detail: 'Rows from other regions never leave the warehouse, so neither the model nor the agent logs ever see them.' },
+          { from: 'gw', to: 'agent', kind: 'return', label: 'result set', detail: 'The gateway can also meter and log the call, recording both the user and the agent app.' },
+          { from: 'agent', to: 'user', kind: 'return', label: 'answer from EMEA deals', detail: 'Warehouse query history shows JANE and the gateway client, so audit lines up with what the user actually saw.' },
+        ],
+      },
+      {
+        id: 'service-account',
+        label: 'Service account + prompt filter',
+        tone: 'bad',
+        outcome: 'The warehouse returns every region to SVC_AGENT; the "only show EMEA" instruction in the prompt is all that stands between Jane and other regions\' data.',
+        steps: [
+          { from: 'user', to: 'agent', kind: 'call', label: '"Top 5 deals this quarter"', detail: 'Same question. The agent knows Jane is in EMEA only because it was told in its system prompt.' },
+          { from: 'agent', to: 'wh', kind: 'call', label: 'query as SVC_AGENT (key-pair)', detail: 'The agent connects with its own key pair. The warehouse sees one principal for every user of the agent.' },
+          { from: 'wh', to: 'wh', kind: 'think', label: 'policy allows SVC_AGENT all regions', detail: 'Service accounts are usually mapped to every region so the agent "works for everyone", which makes the row policy a no-op.' },
+          { from: 'wh', to: 'agent', kind: 'data', label: 'rows from all regions', detail: 'APAC and AMER deal data is now in the agent process, its logs and the model context.' },
+          { from: 'agent', to: 'agent', kind: 'think', label: '"only show the user EMEA rows"', detail: 'Filtering now depends on the model following an instruction. A follow-up like "compare with APAC" or an injected instruction defeats it.' },
+          { from: 'agent', to: 'user', kind: 'return', label: 'answer (maybe filtered)', detail: 'Even when the answer looks right, the data was over-fetched. Query history shows only SVC_AGENT, so nobody can tell which user saw what.' },
+        ],
+      },
+    ],
+    sources: [
+      { title: 'Snowflake: Understanding row access policies', url: 'https://docs.snowflake.com/en/user-guide/security-row-intro' },
+      { title: 'Snowflake: External OAuth overview', url: 'https://docs.snowflake.com/en/user-guide/oauth-ext-overview' },
+      { title: 'Databricks: Row filters and column masks', url: 'https://docs.databricks.com/en/tables/row-and-column-filters.html' },
+      { title: 'Microsoft identity platform: OAuth 2.0 on-behalf-of flow', url: 'https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-on-behalf-of-flow' },
+    ],
+    verify: [
+      'The exact scope string Snowflake External OAuth expects (session:role-any vs a named role) depends on the integration settings.',
+      'Databricks row filter docs URL path may have moved under Unity Catalog.',
+    ],
+    tags: ['row-level security', 'snowflake', 'databricks', 'OBO', 'gateway', 'text-to-SQL', 'governance'],
+  },
 ];

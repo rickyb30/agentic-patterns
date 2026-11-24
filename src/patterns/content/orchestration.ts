@@ -623,4 +623,80 @@ export const ORCHESTRATION_PATTERNS: Pattern[] = [
     ],
     tags: ['human-in-the-loop', 'approval', 'checkpoint', 'durable execution', 'resume'],
   },
+  // ---------------------------------------------------------------------------
+  {
+    id: 'durable-agent',
+    category: 'orchestration',
+    title: 'Durable long-running agent',
+    tagline: 'Survive crashes, deploys and two-day approvals without doing anything twice.',
+    summary:
+      'A real agent task can run for minutes or days: it calls tools, waits on people, and retries. If its state lives only in a process, a crash or deploy restarts it from scratch and repeats side effects. A durable execution engine (Temporal, Azure Durable Functions, Step Functions, or a framework checkpointer) records each completed step. On restart the agent replays from that history, skips finished work, and resumes where it stopped. Side-effecting calls carry an idempotency key so a retry after a lost response cannot create a second refund.',
+    whenToUse: [
+      'Tasks that wait on humans or external systems for longer than a request timeout.',
+      'Any agent whose tools move money, send messages or change records, where a duplicate is costly.',
+      'Fleets of agents on infrastructure that is redeployed or scaled down often.',
+    ],
+    risks: [
+      'Replay requires deterministic orchestration code; model calls and clocks must be recorded as steps, not re-executed.',
+      'Idempotency only works if the downstream API honours keys and the key is derived from the step, not generated fresh on retry.',
+      'Long-lived workflows keep old prompts and tool versions; plan for versioning in-flight runs.',
+    ],
+    actors: [
+      { id: 'user', label: 'Support lead', kind: 'human' },
+      { id: 'engine', label: 'Workflow engine', kind: 'queue', sub: 'event history' },
+      { id: 'worker', label: 'Agent worker', kind: 'agent' },
+      { id: 'llm', label: 'Model', kind: 'llm' },
+      { id: 'api', label: 'Billing API', kind: 'tool', sub: 'honours Idempotency-Key' },
+    ],
+    variants: [
+      {
+        id: 'durable',
+        label: 'Checkpointed + idempotent',
+        tone: 'good',
+        outcome: 'The worker crashes mid-task and the approval takes two days, yet the customer is refunded exactly once.',
+        steps: [
+          { from: 'engine', to: 'worker', kind: 'call', label: 'start: refund case #4821', detail: 'The engine owns the run. Workers are stateless and can be replaced at any time.' },
+          { from: 'worker', to: 'llm', kind: 'call', label: 'decide refund amount', detail: 'The model call is an activity; its result is written to the event history.' },
+          { from: 'llm', to: 'worker', kind: 'return', label: 'refund 240.00, needs approval', detail: 'Recorded. On replay the worker reads this result instead of calling the model again, so the decision cannot change.' },
+          { from: 'engine', to: 'user', kind: 'event', label: 'approval request', detail: 'The workflow waits on a signal. No process is held open; waiting costs nothing.' },
+          { from: 'user', to: 'engine', kind: 'approval', label: 'approved (2 days later)', detail: 'The signal is persisted and the workflow is scheduled to continue on any worker.' },
+          {
+            from: 'worker', to: 'api', kind: 'call', label: 'POST /refunds (key=case-4821-s3)',
+            detail: 'The key is derived from the run and step, so every retry of this step sends the same key.',
+            payload: 'POST /refunds\nIdempotency-Key: case-4821-step-3\n{"invoice": "INV-1093", "amount": "240.00"}',
+          },
+          { from: 'worker', to: 'worker', kind: 'block', label: 'worker crashes before ack', detail: 'The refund succeeded at the API but the worker died before recording it.' },
+          { from: 'engine', to: 'worker', kind: 'call', label: 'replay on new worker', detail: 'History shows steps 1 and 2 done and step 3 started but not completed, so only step 3 is retried.' },
+          { from: 'worker', to: 'api', kind: 'call', label: 'POST /refunds (same key)', detail: 'The retry carries the same key.' },
+          { from: 'api', to: 'worker', kind: 'return', label: '200 original refund (no new one)', detail: 'The API recognises the key and returns the first result instead of refunding again.' },
+          { from: 'worker', to: 'engine', kind: 'data', label: 'step 3 complete', detail: 'The run finishes. History is a full audit of every decision, wait and retry.' },
+        ],
+      },
+      {
+        id: 'in-memory',
+        label: 'In-memory loop',
+        tone: 'bad',
+        outcome: 'A routine deploy restarts the agent loop from the beginning and the customer is refunded twice.',
+        steps: [
+          { from: 'engine', to: 'worker', kind: 'call', label: 'queue message: case #4821', detail: 'The queue delivers the task; all further state lives in the worker\'s memory.' },
+          { from: 'worker', to: 'llm', kind: 'call', label: 'decide refund amount', detail: 'Not recorded anywhere outside the process.' },
+          { from: 'worker', to: 'api', kind: 'call', label: 'POST /refunds (no key)', detail: 'Approval was skipped to avoid holding the process for days, and no idempotency key is sent.' },
+          { from: 'worker', to: 'worker', kind: 'block', label: 'pod restarted by deploy', detail: 'The message was never acknowledged, so the queue redelivers it.' },
+          { from: 'engine', to: 'worker', kind: 'call', label: 'redelivered: case #4821', detail: 'A fresh worker starts the whole task again with no memory of the first attempt.' },
+          { from: 'worker', to: 'api', kind: 'call', label: 'POST /refunds (again)', detail: 'The model may even choose a different amount this time.' },
+          { from: 'api', to: 'worker', kind: 'return', label: '201 second refund', detail: 'Two refunds, and no single record explains why.' },
+        ],
+      },
+    ],
+    sources: [
+      { title: 'Temporal: Workflows and event history', url: 'https://docs.temporal.io/workflows' },
+      { title: 'Azure Durable Functions overview', url: 'https://learn.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-overview' },
+      { title: 'Stripe API: Idempotent requests', url: 'https://docs.stripe.com/api/idempotent_requests' },
+      { title: 'LangGraph: Persistence and checkpointers', url: 'https://langchain-ai.github.io/langgraph/concepts/persistence/' },
+    ],
+    verify: [
+      'LangGraph documentation URL may have moved to the newer LangChain docs site.',
+    ],
+    tags: ['durable execution', 'idempotency', 'checkpoint', 'retry', 'Temporal', 'long-running', 'approval'],
+  },
 ];

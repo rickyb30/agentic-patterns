@@ -13,7 +13,7 @@ Everything lives in one pattern library:
   Each gateway can forward the caller's token, swap it for its own identity, or (API gateway
   only) do an OBO exchange so the user survives. A token card shows claims changing hop by
   hop.
-- **Sequence patterns.** Animated, step-through sequence diagrams of 30 agent patterns across
+- **Sequence patterns.** Animated, step-through sequence diagrams of 36 agent patterns across
   orchestration, identity (MCP OAuth, Entra Agent ID, CIBA, ID-JAG, token exchange), data
   (RAG, permission-trimmed RAG, text-to-SQL, memory), security (lethal trifecta, tool
   poisoning, confused deputy, sandboxing) and platform (A2A, OpenTelemetry, gateway fallback).
@@ -44,6 +44,7 @@ npm run build    # static site in dist/
 | `src/patterns/` | Pattern types, validator and content (`content/*.ts`) |
 | `src/ui/` | SVG map, inspector, token card, pattern library and sequence player, URL-hash state |
 | `docs/concept.md` | Design concept and roadmap |
+| `docs/backlog.md` | Patterns planned but not built yet |
 
 To add a platform, add a node to `catalog.ts`, a layout position in `src/ui/map.ts`, and a
 resolver in `src/model/hops/platforms.ts`. The tests check every combination resolves and
