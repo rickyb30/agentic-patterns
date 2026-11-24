@@ -7,15 +7,19 @@ const NODE_KEYS: Record<NodeKey, string> = { trigger: 't', channel: 'c', runtime
 /** Extra hash parameters owned by other parts of the page, e.g. the pattern library. */
 export type Extra = Record<string, string | undefined>;
 
-/** Serialise the selection into the URL hash so a path can be linked. Works on a static host. */
+/**
+ * Serialise the selection into the URL hash so a path can be linked. Works on a static host.
+ * Only values that differ from the defaults are written; returns '' when nothing differs.
+ */
 export function toHash(sel: Selection, extra: Extra = {}): string {
   const p = new URLSearchParams();
-  (Object.keys(NODE_KEYS) as NodeKey[]).forEach((k) => p.set(NODE_KEYS[k], sel[k]));
-  p.set('i', sel.identity);
+  (Object.keys(NODE_KEYS) as NodeKey[]).forEach((k) => { if (sel[k] !== DEFAULT_SELECTION[k]) p.set(NODE_KEYS[k], sel[k]); });
+  if (sel.identity !== DEFAULT_SELECTION.identity) p.set('i', sel.identity);
   if (sel.aiGateway && sel.aiGateway !== 'off') p.set('ag', sel.aiGateway);
   if (sel.apiGateway && sel.apiGateway !== 'off') p.set('pg', sel.apiGateway);
   for (const [k, v] of Object.entries(extra)) if (v) p.set(k, v);
-  return `#${p.toString()}`;
+  const s = p.toString();
+  return s ? `#${s}` : '';
 }
 
 /** Parse the hash, ignoring anything unknown so a hand-edited link cannot break the page. */

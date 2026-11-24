@@ -61,6 +61,8 @@ describe('gateways', () => {
     expect(back.apiGateway).toBe('exchange');
     expect(toHash(base)).not.toMatch(/[&#]ag=|[&#]pg=/);
     expect(fromHash('#ag=bogus&pg=nope').aiGateway ?? 'off').toBe('off');
+    expect(toHash(fromHash(''))).toBe('');
+    expect(toHash({ ...fromHash(''), identity: 'm2m' })).toBe('#i=m2m');
   });
 });
 

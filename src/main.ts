@@ -53,7 +53,10 @@ const library = mountLibrary(
 
 function writeHash(): void {
   const lib = library?.current();
-  history.replaceState(null, '', toHash(sel, lib ? { pat: lib.pattern, pv: lib.variant ? String(lib.variant) : undefined } : {}));
+  // The first interactive card is the default view, so it is left out of the URL like other defaults.
+  const pat = lib && lib.pattern !== 'identity-paths' ? lib.pattern : undefined;
+  const hash = toHash(sel, lib ? { pat, pv: lib.variant ? String(lib.variant) : undefined } : {});
+  if (hash !== location.hash) history.replaceState(null, '', hash || location.pathname + location.search);
 }
 
 /** Redraw the parts that depend on the active hop only. Cheap; called on every animation step. */
