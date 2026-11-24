@@ -1,4 +1,4 @@
-# Agent Path Explorer
+# Agentic Patterns
 
 A single-page, simulated map of how an AI agent request travels end to end: trigger, channel,
 agent runtime, model backend, tool layer and data platform. It shows how the **identity

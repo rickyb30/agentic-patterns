@@ -1,5 +1,5 @@
 {
-  "name": "agent-path-explorer",
+  "name": "agentic-patterns",
   "private": true,
   "version": "0.1.0",
   "description": "Interactive, simulated map of how AI agent requests travel end to end and how the identity choice changes every hop.",

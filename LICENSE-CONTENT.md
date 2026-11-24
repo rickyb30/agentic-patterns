@@ -14,7 +14,7 @@ Full legal text: <https://creativecommons.org/licenses/by/4.0/legalcode>.
 All other files, including the code that holds or renders that content, are under the MIT
 licence in [`LICENSE`](LICENSE).
 
-Attribution: "Agent Path Explorer" by Ricky Brar, CC BY 4.0.
+Attribution: "Agentic Patterns" by Ricky Brar, CC BY 4.0.
 
 Every token, identifier and request in the content is a fictional sample. Third-party product
 names belong to their owners and are used only to describe how their documented

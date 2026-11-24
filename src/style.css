@@ -224,7 +224,15 @@ pre {
   white-space: pre-wrap; word-break: break-all;
 }
 
-.footer { padding: 12px 16px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+.coffee-btn {
+  position: fixed; right: 16px; bottom: 16px; z-index: 20;
+  padding: 8px 14px; border-radius: 999px; font-size: 13px; font-weight: 600; text-decoration: none;
+  background: #ffdd00; color: #1a1a1a; box-shadow: 0 4px 14px rgb(0 0 0 / 0.18);
+}
+.coffee-btn:hover { filter: brightness(0.95); }
+.coffee-btn:focus-visible { outline: 2px solid var(--c-orchestration); outline-offset: 2px; }
+.coffee-btn[hidden] { display: none; }
+.footer { padding: 12px 16px 64px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
 
 /* ---------- page chrome ---------- */
 .topbar { position: sticky; top: 0; z-index: 10; backdrop-filter: blur(8px); background: color-mix(in srgb, var(--panel) 88%, transparent); }
