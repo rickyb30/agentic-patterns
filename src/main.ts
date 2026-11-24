@@ -27,10 +27,10 @@ const legend = $<HTMLElement>('#legend');
 const tokenCard = $<HTMLElement>('#token-card');
 
 /** Buy Me a Coffee handle; the button stays hidden while this is empty. */
-const BMC_HANDLE = '';
+const BMC_HANDLE = 'rickyb30';
 if (BMC_HANDLE) {
   const coffee = $<HTMLAnchorElement>('#coffee-btn');
-  coffee.href = `https://www.buymeacoffee.com/${encodeURIComponent(BMC_HANDLE)}`;
+  coffee.href = `https://buymeacoffee.com/${encodeURIComponent(BMC_HANDLE)}`;
   coffee.hidden = false;
 }
 
