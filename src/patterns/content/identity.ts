@@ -992,4 +992,74 @@ export const IDENTITY_PATTERNS: Pattern[] = [
     ],
     tags: ['step-up', 'insufficient_scope', 'MFA', 'acr', 'least privilege', 'MCP', 'OAuth'],
   },
+  // ---------------------------------------------------------------------------
+  {
+    id: 'jit-credentials',
+    category: 'identity',
+    title: 'Just-in-time credentials per task',
+    tagline: 'Issue a narrow credential when the task starts; let it die when the task ends.',
+    summary:
+      'Instead of giving an agent a standing key with every permission it might ever need, a broker issues a fresh credential for each task, scoped to that task\'s resources and expiring minutes later. Examples are dynamic database users from a secrets engine, cloud session credentials from an assumed role with a session policy, or short-lived tokens with a narrow scope. A leaked credential is then useful only for one task\'s scope, briefly, and every issuance is a log line that ties the credential to a task.',
+    whenToUse: [
+      'Agents that touch databases, cloud APIs or infrastructure where a standing key would be broad and long-lived.',
+      'Multi-tenant agents, where each task should only reach one tenant\'s resources.',
+      'Any place where a credential could end up in a model context, a log or a sandbox.',
+    ],
+    risks: [
+      'The broker becomes critical infrastructure: if it is down, agents cannot work; if it is over-permissive, everything downstream is.',
+      'TTLs that are too short break long tasks; too long and the benefit fades. Renew per step rather than stretching the TTL.',
+      'Scope still has to be decided by trusted code, not by the model asking for "what it needs".',
+    ],
+    actors: [
+      { id: 'orch', label: 'Orchestrator', kind: 'queue', sub: 'starts tasks' },
+      { id: 'agent', label: 'Agent', kind: 'agent', sub: 'workload identity' },
+      { id: 'broker', label: 'Credential broker', kind: 'vault', sub: 'secrets engine / STS' },
+      { id: 'db', label: 'Orders DB', kind: 'data' },
+      { id: 'attacker', label: 'Attacker', kind: 'attacker', sub: 'finds a leaked credential' },
+    ],
+    variants: [
+      {
+        id: 'jit',
+        label: 'Per-task, short-lived',
+        tone: 'good',
+        outcome: 'The credential works for one schema, read-only, for 15 minutes; when it leaks from a log an hour later it is already dead.',
+        steps: [
+          { from: 'orch', to: 'agent', kind: 'call', label: 'task: reconcile tenant 42 orders', detail: 'The task definition, not the model, carries the tenant and the access level needed.' },
+          {
+            from: 'agent', to: 'broker', kind: 'token', label: 'request: tenant_42 read, 15 min',
+            detail: 'The agent authenticates with its workload identity (no stored secret) and asks for a role defined in advance for this task type.',
+            payload: 'POST /v1/database/creds/orders-reader-tenant42\nAuthorization: Bearer <workload identity token>\n{"ttl": "15m"}',
+          },
+          { from: 'broker', to: 'db', kind: 'call', label: 'CREATE USER tmp_7f3a … GRANT SELECT', detail: 'The broker creates a temporary database user with only the grants in the role template.' },
+          { from: 'broker', to: 'agent', kind: 'token', label: 'user tmp_7f3a, expires 10:15', detail: 'A unique credential per task, recorded against the task id.' },
+          { from: 'agent', to: 'db', kind: 'data', label: 'SELECT … FROM tenant_42.orders', detail: 'Queries succeed inside the granted scope; anything else is denied by the database.' },
+          { from: 'broker', to: 'db', kind: 'call', label: 'lease expired: DROP USER tmp_7f3a', detail: 'At expiry the broker revokes the credential. Ending the task early can revoke it sooner.' },
+          { from: 'attacker', to: 'db', kind: 'attack', label: 'login as tmp_7f3a (11:20)', detail: 'The credential leaked through a debug log. It no longer exists.' },
+          { from: 'db', to: 'attacker', kind: 'block', label: 'authentication failed', detail: 'The leak is a non-event, and the broker\'s audit log shows exactly which task the credential belonged to.' },
+        ],
+      },
+      {
+        id: 'standing',
+        label: 'One standing key',
+        tone: 'bad',
+        outcome: 'A key in the agent\'s config reaches every tenant with write access and never expires, so one leak exposes everything until someone notices.',
+        steps: [
+          { from: 'orch', to: 'agent', kind: 'call', label: 'task: reconcile tenant 42 orders', detail: 'Same task.' },
+          { from: 'agent', to: 'db', kind: 'data', label: 'connect as AGENT_SVC (all tenants)', detail: 'The agent uses a password from its environment, granted broadly so it works for every task type.' },
+          { from: 'agent', to: 'agent', kind: 'think', label: 'connection string logged on error', detail: 'A failed query logs the full connection string, a common way credentials escape.' },
+          { from: 'attacker', to: 'db', kind: 'attack', label: 'login as AGENT_SVC (weeks later)', detail: 'The credential still works because nothing rotates it.' },
+          { from: 'db', to: 'attacker', kind: 'data', label: 'every tenant\'s orders, writable', detail: 'The audit trail shows AGENT_SVC, the same principal as legitimate traffic, so the misuse blends in.' },
+        ],
+      },
+    ],
+    sources: [
+      { title: 'HashiCorp Vault: Database secrets engine (dynamic credentials)', url: 'https://developer.hashicorp.com/vault/docs/secrets/databases' },
+      { title: 'AWS STS: AssumeRole with session policies', url: 'https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_temp_request.html' },
+      { title: 'OWASP: Secrets Management Cheat Sheet', url: 'https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html' },
+    ],
+    verify: [
+      'The Vault request path and parameters shown are illustrative; real paths depend on how the engine and role are mounted.',
+    ],
+    tags: ['just-in-time', 'dynamic secrets', 'least privilege', 'TTL', 'workload identity', 'vault', 'STS'],
+  },
 ];

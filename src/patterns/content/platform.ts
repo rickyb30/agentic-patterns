@@ -26,6 +26,7 @@ export const PLATFORM_PATTERNS: Pattern[] = [
       { id: 'idp', label: 'Authorization server', kind: 'idp', sub: 'OAuth 2.0' },
       { id: 'remote', label: 'Remote agent', kind: 'agent', sub: 'A2A server' },
       { id: 'webhook', label: 'Client webhook', kind: 'queue', sub: 'push notifications' },
+      { id: 'attacker', label: 'Lookalike agent', kind: 'attacker', sub: 'spoofed card' },
     ],
     variants: [
       {
@@ -102,6 +103,24 @@ export const PLATFORM_PATTERNS: Pattern[] = [
           { from: 'webhook', to: 'client', kind: 'event', label: 'resume planner run', detail: 'The webhook enqueues a resume for the client agent\'s paused run; see the scheduled-agent pattern for making that durable.' },
           { from: 'client', to: 'remote', kind: 'call', label: 'tasks/get t-9c2', detail: 'Fetch the authoritative task state and artifacts over the authenticated channel.' },
           { from: 'client', to: 'user', kind: 'return', label: 'booked 4–6 March', detail: 'Done, with the human decision recorded in the client\'s audit trail.' },
+        ],
+      },
+      {
+        id: 'spoofed-card',
+        label: 'Spoofed agent card',
+        tone: 'bad',
+        outcome: 'The client trusts an agent card it found by name, so it authenticates to and sends customer data to a lookalike agent the attacker runs.',
+        steps: [
+          { from: 'attacker', to: 'client', kind: 'attack', label: 'publish card "Invoice Agent"', detail: 'The attacker registers a card with the same name and skills in an open registry, hosted on a lookalike domain.' },
+          { from: 'user', to: 'client', kind: 'call', label: '"Reconcile Q3 invoices"', detail: 'Same kind of task as the other variants.' },
+          {
+            from: 'client', to: 'attacker', kind: 'call', label: 'fetch card by name (no allow-list)',
+            detail: 'The client picks the agent by its self-described name and skills, without checking the domain against an allow-list or verifying a card signature.',
+            payload: 'GET https://invoice-agent.example-lookalike.net/.well-known/agent-card.json\n{"name": "Invoice Agent", "skills": [{"id": "reconcile"}], ...}',
+          },
+          { from: 'client', to: 'attacker', kind: 'call', label: 'message/send + Q3 invoice data', detail: 'The task, with customer invoices, goes to the attacker. If the card names an attacker-controlled auth server, the client may also hand over a token.' },
+          { from: 'attacker', to: 'client', kind: 'return', label: 'artifact with injected text', detail: 'The returned artifact is untrusted content too; it can carry instructions aimed at the client agent.' },
+          { from: 'client', to: 'user', kind: 'return', label: '"reconciled" (data leaked)', detail: 'Fix: only call remote agents from an allow-list or curated registry, check the card\'s domain and signature, and use your own authorization server\'s audience for the remote agent.' },
         ],
       },
     ],
@@ -302,6 +321,22 @@ export const PLATFORM_PATTERNS: Pattern[] = [
           { from: 'gw', to: 'agent', kind: 'return', label: 'completion', detail: 'The app saw one slower success instead of a 429. It never learned which backend served it unless the gateway adds a header.' },
         ],
       },
+      {
+        id: 'shared-cache-leak',
+        label: 'Cache shared across users',
+        tone: 'bad',
+        outcome: 'The cache key ignores who is asking, so a semantically similar question from another user returns Jane\'s cached answer, including her account details.',
+        steps: [
+          { from: 'agent', to: 'gw', kind: 'call', label: 'jane: "what\'s my plan and balance?"', detail: 'The answer is personal: it was generated from Jane\'s account data in the prompt.' },
+          { from: 'gw', to: 'primary', kind: 'call', label: 'cache miss → model', detail: 'No similar prompt in the cache yet.' },
+          { from: 'primary', to: 'gw', kind: 'return', label: '"Pro plan, balance $412.06"', detail: 'A user-specific answer.' },
+          { from: 'gw', to: 'cache', kind: 'data', label: 'store: embedding → answer', detail: 'Stored with only the prompt embedding as the key: no user, tenant or data-scope partition.' },
+          { from: 'agent', to: 'gw', kind: 'call', label: 'bob: "what is my plan + balance"', detail: 'A different user asks a question with nearly the same meaning.' },
+          { from: 'gw', to: 'cache', kind: 'call', label: 'similarity 0.97 ≥ threshold', detail: 'Semantic matching is the feature; here it is the bug.' },
+          { from: 'cache', to: 'agent', kind: 'attack', label: 'returns Jane\'s answer to Bob', detail: 'Cross-user data leak. Fix: partition the cache by user or tenant (and by the data scope of the prompt), or cache only answers built from shared, non-personal content.' },
+          { from: 'gw', to: 'obs', kind: 'data', label: 'logged as a cache hit', detail: 'Metrics show a saving; nothing flags the leak.' },
+        ],
+      },
     ],
     sources: [
       { title: 'Microsoft Learn: AI gateway capabilities in Azure API Management', url: 'https://learn.microsoft.com/en-us/azure/api-management/genai-gateway-capabilities' },
@@ -490,5 +525,69 @@ export const PLATFORM_PATTERNS: Pattern[] = [
       'Anthropic evaluation docs URL may have moved to the newer docs site path.',
     ],
     tags: ['evals', 'CI', 'LLM-as-judge', 'regression', 'golden set', 'quality gate'],
+  },
+  // ---------------------------------------------------------------------------
+  {
+    id: 'shadow-canary',
+    category: 'platform',
+    title: 'Shadow and canary rollout for prompts and models',
+    tagline: 'Try the new version on real traffic before real users depend on it.',
+    summary:
+      'Offline evals catch known problems; production traffic finds the rest. In shadow mode, a copy of live requests goes to the new prompt or model, its answers are scored but never shown, and side-effecting tools are stubbed. In a canary, a small share of real users get the new version while metrics are compared with the current one, and the rollout stops automatically if they get worse. Both depend on versioning prompts and model choices as configuration that can be switched without a redeploy.',
+    whenToUse: [
+      'Model upgrades, major prompt rewrites, new tools or retrieval changes on agents with real users.',
+      'After evals pass, as the step between "passes the golden set" and "everyone gets it".',
+    ],
+    risks: [
+      'Shadow runs must not call real side-effecting tools; stub or dry-run them, or shadow mode sends real emails.',
+      'Shadow traffic doubles model cost for the sampled share.',
+      'Canary metrics need enough volume and a pre-agreed threshold, or the rollback decision becomes a debate.',
+      'Sticky assignment matters: a user switching versions mid-conversation sees inconsistent behaviour.',
+    ],
+    actors: [
+      { id: 'users', label: 'Users', kind: 'user' },
+      { id: 'router', label: 'Traffic router', kind: 'gateway', sub: 'version flags' },
+      { id: 'current', label: 'Agent v12', kind: 'agent', sub: 'current' },
+      { id: 'candidate', label: 'Agent v13', kind: 'agent', sub: 'new prompt + model' },
+      { id: 'scorer', label: 'Online scorer', kind: 'guard', sub: 'judge + metrics' },
+      { id: 'obs', label: 'Dashboards', kind: 'observability' },
+    ],
+    variants: [
+      {
+        id: 'staged',
+        label: 'Shadow, then canary',
+        tone: 'good',
+        outcome: 'v13 looks fine offline, shows a higher escalation rate in shadow, and its canary is rolled back automatically at 5% before most users notice.',
+        steps: [
+          { from: 'users', to: 'router', kind: 'call', label: 'live requests', detail: 'All users are on v12.' },
+          { from: 'router', to: 'current', kind: 'call', label: 'serve v12 (100%)', group: 1, detail: 'Users see only v12 answers.' },
+          { from: 'router', to: 'candidate', kind: 'call', label: 'shadow copy (10%), tools stubbed', group: 1, detail: 'v13 gets the same inputs. Side-effecting tools return recorded or dry-run results so nothing real happens.' },
+          { from: 'candidate', to: 'scorer', kind: 'data', label: 'v13 answers, not shown', detail: 'Answers from both versions are scored on the same requests: judge scores, tool-call errors, refusals, latency, cost.' },
+          { from: 'scorer', to: 'obs', kind: 'data', label: 'v13 escalations +40% on billing', detail: 'A slice the golden set under-represented.' },
+          { from: 'router', to: 'candidate', kind: 'call', label: 'canary: 5% of users (sticky)', detail: 'After a prompt fix, v13 goes live to a small, sticky share of users with real tools.' },
+          { from: 'scorer', to: 'obs', kind: 'data', label: 'thumbs-down 2.1% vs 1.2%', detail: 'Compared with v12 over the same window, the gap exceeds the agreed threshold.' },
+          { from: 'obs', to: 'router', kind: 'block', label: 'auto-rollback to v12', detail: 'The router flips the flag; no redeploy needed. The canary users return to v12 on their next conversation.' },
+        ],
+      },
+      {
+        id: 'big-bang',
+        label: 'Ship to everyone',
+        tone: 'bad',
+        outcome: 'v13 goes to 100% after passing evals; the billing regression appears as a spike in support tickets two days later.',
+        steps: [
+          { from: 'router', to: 'candidate', kind: 'call', label: 'switch 100% to v13', detail: 'Evals passed, so the new version replaces the old one everywhere at once.' },
+          { from: 'users', to: 'router', kind: 'call', label: 'live requests', detail: 'Every user is now on v13.' },
+          { from: 'candidate', to: 'users', kind: 'return', label: 'worse billing answers', detail: 'The same regression shadow mode would have shown, now affecting everyone.' },
+          { from: 'users', to: 'obs', kind: 'event', label: 'support tickets spike (day 2)', detail: 'The signal arrives late and indirectly; there is no side-by-side comparison to confirm the cause.' },
+          { from: 'obs', to: 'router', kind: 'call', label: 'manual rollback (redeploy)', detail: 'Prompts were baked into the build, so rolling back means a redeploy.' },
+        ],
+      },
+    ],
+    sources: [
+      { title: 'Google SRE Workbook: Canarying releases', url: 'https://sre.google/workbook/canarying-releases/' },
+      { title: 'Martin Fowler: Feature toggles', url: 'https://martinfowler.com/articles/feature-toggles.html' },
+      { title: 'OpenTelemetry: Semantic conventions for generative AI', url: 'https://opentelemetry.io/docs/specs/semconv/gen-ai/' },
+    ],
+    tags: ['canary', 'shadow traffic', 'rollout', 'feature flags', 'model upgrade', 'online evaluation'],
   },
 ];

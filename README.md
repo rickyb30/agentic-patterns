@@ -13,7 +13,7 @@ Everything lives in one pattern library:
   Each gateway can forward the caller's token, swap it for its own identity, or (API gateway
   only) do an OBO exchange so the user survives. A token card shows claims changing hop by
   hop.
-- **Sequence patterns.** Animated, step-through sequence diagrams of 35 agent patterns across
+- **Sequence patterns.** Animated, step-through sequence diagrams of 38 agent patterns across
   orchestration, identity (MCP OAuth, Entra Agent ID, CIBA, ID-JAG, token exchange), data
   (RAG, permission-trimmed RAG, text-to-SQL, memory), security (lethal trifecta, tool
   poisoning, confused deputy, sandboxing) and platform (A2A, OpenTelemetry, gateway fallback).
