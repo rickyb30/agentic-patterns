@@ -74,7 +74,7 @@ describe('pattern library', () => {
   it('pattern ids are unique and every category is populated', () => {
     const seen = new Set(PATTERNS.map((p) => p.id));
     expect(seen.size).toBe(PATTERNS.length);
-    for (const c of ['orchestration', 'identity', 'data', 'security', 'platform']) expect(PATTERNS.some((p) => p.category === c), c).toBe(true);
+    for (const c of ['orchestration', 'identity', 'data', 'security', 'platform', 'local']) expect(PATTERNS.some((p) => p.category === c), c).toBe(true);
   });
 
   it('contains no real-looking secrets or sample-company names', () => {

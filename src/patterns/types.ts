@@ -65,7 +65,7 @@ export interface Variant {
   tone: 'good' | 'bad' | 'neutral';
 }
 
-export type Category = 'orchestration' | 'identity' | 'data' | 'security' | 'platform';
+export type Category = 'orchestration' | 'identity' | 'data' | 'security' | 'platform' | 'local';
 
 export interface Pattern {
   id: string;
@@ -94,4 +94,5 @@ export const CATEGORY_LABEL: Record<Category, string> = {
   data: 'Data & retrieval',
   security: 'Security & threats',
   platform: 'Platform & operations',
+  local: 'Local & coding agents',
 };

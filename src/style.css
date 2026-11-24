@@ -21,6 +21,7 @@
   --c-data: #0f766e;
   --c-security: #dc2626;
   --c-platform: #b45309;
+  --c-local: #db2777;
   --good: #15803d;
   --bad: #dc2626;
   --glow: rgba(47, 111, 222, 0.18);
@@ -51,6 +52,7 @@
     --c-data: #2dd4bf;
     --c-security: #f87171;
     --c-platform: #fbbf24;
+    --c-local: #f472b6;
     --good: #4ade80;
     --bad: #f87171;
     --glow: rgba(110, 160, 255, 0.22);
@@ -80,6 +82,7 @@
     --c-data: #2dd4bf;
     --c-security: #f87171;
     --c-platform: #fbbf24;
+    --c-local: #f472b6;
     --good: #4ade80;
     --bad: #f87171;
     --glow: rgba(110, 160, 255, 0.22);
@@ -311,6 +314,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .c-data { --c: var(--c-data); }
 .c-security { --c: var(--c-security); }
 .c-platform { --c: var(--c-platform); }
+.c-local { --c: var(--c-local); }
 .card-cat { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; font-weight: 700; color: var(--c, var(--accent)); }
 .card-title { font-weight: 650; font-size: 14.5px; }
 .card-tag { color: var(--muted); font-size: 12.5px; flex: 1; }

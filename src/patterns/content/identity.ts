@@ -1062,4 +1062,222 @@ export const IDENTITY_PATTERNS: Pattern[] = [
     ],
     tags: ['just-in-time', 'dynamic secrets', 'least privilege', 'TTL', 'workload identity', 'vault', 'STS'],
   },
+  // ---------------------------------------------------------------------------
+  {
+    id: 'proof-of-possession',
+    category: 'identity',
+    title: 'Proof-of-possession for agent requests',
+    tagline: 'Bind the token to a key the agent holds, so a stolen token alone is useless.',
+    summary:
+      'A bearer token works for whoever holds it. Agents leak tokens in more ways than web apps: into logs, traces, model context, tool outputs and sandboxes. Sender-constrained tokens fix this by binding the token to a key pair: the authorization server records the key\'s thumbprint in the token, and every request carries a fresh signature made with the private key. DPoP (RFC 9449) does this with a signed JWT per request; HTTP Message Signatures (RFC 9421) sign selected parts of the request; the AAuth draft builds an agent identity protocol on top of them.',
+    whenToUse: [
+      'Agents whose tokens could end up in model context, logs or tool output.',
+      'High-value APIs (payments, admin, data export) called by agents.',
+      'Agents running across many instances, where each instance can have its own key.',
+    ],
+    risks: [
+      'If the private key is stored next to the token (same env file, same sandbox), stealing both is as easy as stealing one. Keep it in a KMS, TPM or the runtime\'s key store.',
+      'Every resource server must validate the proof; one that accepts the token as a plain bearer token removes the protection.',
+      'AAuth is an individual Internet-Draft and still changing; DPoP and RFC 9421 are published standards.',
+    ],
+    actors: [
+      { id: 'agent', label: 'Agent', kind: 'agent', sub: 'holds private key' },
+      { id: 'kms', label: 'Key store', kind: 'vault', sub: 'non-exportable key' },
+      { id: 'as', label: 'Authorization server', kind: 'idp' },
+      { id: 'api', label: 'Payments API', kind: 'tool', sub: 'resource server' },
+      { id: 'attacker', label: 'Attacker', kind: 'attacker', sub: 'has a copy of the token' },
+    ],
+    variants: [
+      {
+        id: 'dpop',
+        label: 'DPoP-bound token',
+        tone: 'good',
+        outcome: 'The token leaks through a trace export, but the attacker cannot produce a valid proof without the agent\'s private key, so the API refuses it.',
+        steps: [
+          { from: 'agent', to: 'kms', kind: 'call', label: 'sign DPoP proof (token request)', detail: 'The private key never leaves the key store; the agent asks it to sign.' },
+          {
+            from: 'agent', to: 'as', kind: 'token', label: 'token request + DPoP header',
+            detail: 'The proof is a short JWT signed with the agent\'s key, naming the method and URL.',
+            payload: 'POST /token\nDPoP: eyJ…(typ=dpop+jwt, jwk=<public key>, htm=POST, htu=https://as.example.com/token, iat, jti)',
+          },
+          {
+            from: 'as', to: 'agent', kind: 'token', label: 'access token, cnf.jkt = key thumbprint',
+            detail: 'The token is bound to the key: it carries the thumbprint of the public key that signed the proof.',
+            payload: '{ "sub": "agent-payments-01", "scope": "payments:create", "cnf": { "jkt": "<SHA-256 thumbprint of the public key>" }, "exp": … }',
+          },
+          { from: 'agent', to: 'api', kind: 'call', label: 'POST /payments + token + new proof', detail: 'Each request carries a new proof for this method and URL, with a unique jti and, after the first, the server\'s nonce.' },
+          { from: 'api', to: 'api', kind: 'think', label: 'check proof key = cnf.jkt', detail: 'The API verifies the proof signature, that its key matches the token\'s thumbprint, and that the jti has not been seen.' },
+          { from: 'api', to: 'agent', kind: 'return', label: '201 created', detail: 'Normal operation.' },
+          { from: 'attacker', to: 'api', kind: 'attack', label: 'replay token from a trace', detail: 'The token was captured from an exported trace. The attacker can reuse an old proof or sign with their own key.' },
+          { from: 'api', to: 'attacker', kind: 'block', label: '401 invalid DPoP proof', detail: 'The old proof is for a different request or already used; a new key does not match cnf.jkt.' },
+        ],
+      },
+      {
+        id: 'bearer',
+        label: 'Plain bearer token',
+        tone: 'bad',
+        outcome: 'The same leaked token works from anywhere until it expires.',
+        steps: [
+          { from: 'agent', to: 'as', kind: 'token', label: 'client_credentials', detail: 'A normal bearer token request.' },
+          { from: 'as', to: 'agent', kind: 'token', label: 'bearer token, 60 min', detail: 'Nothing ties the token to the agent that requested it.' },
+          { from: 'agent', to: 'api', kind: 'call', label: 'POST /payments + bearer', detail: 'The token is logged in a tool-call trace by an over-eager debug setting.' },
+          { from: 'attacker', to: 'api', kind: 'attack', label: 'POST /payments + same bearer', detail: 'From another network, 20 minutes later.' },
+          { from: 'api', to: 'attacker', kind: 'return', label: '201 created', detail: 'To the API the attacker is the agent. Short lifetimes limit the window but do not close it.' },
+        ],
+      },
+    ],
+    sources: [
+      { title: 'RFC 9449: OAuth 2.0 Demonstrating Proof of Possession (DPoP)', url: 'https://datatracker.ietf.org/doc/html/rfc9449' },
+      { title: 'RFC 9421: HTTP Message Signatures', url: 'https://datatracker.ietf.org/doc/html/rfc9421' },
+      { title: 'AAuth protocol (Internet-Draft, work in progress)', url: 'https://datatracker.ietf.org/doc/draft-hardt-oauth-aauth-protocol/' },
+      { title: 'RFC 8705: OAuth 2.0 Mutual-TLS client authentication and certificate-bound tokens', url: 'https://datatracker.ietf.org/doc/html/rfc8705' },
+    ],
+    verify: [
+      'AAuth is an individual draft; its message formats are likely to change.',
+    ],
+    tags: ['DPoP', 'proof of possession', 'sender-constrained', 'HTTP message signatures', 'AAuth', 'mTLS', 'token theft'],
+  },
+  // ---------------------------------------------------------------------------
+  {
+    id: 'transaction-tokens',
+    category: 'identity',
+    title: 'Transaction tokens across an internal call chain',
+    tagline: 'Carry who asked and which agent acted through every internal hop, without forwarding the access token.',
+    summary:
+      'An agent request often fans out through several internal services. Forwarding the user\'s external access token to all of them spreads a powerful credential and gives each service more than it needs. Transaction tokens (an OAuth working group draft) replace it at the edge with a short-lived, signed token that is valid only inside the trust domain and carries immutable context: the subject, the purpose and request details. The agents extension draft adds the agent as the actor (act claim) next to the user (sub), so every service can see both and logs line up across the chain.',
+    whenToUse: [
+      'Agent requests that pass through several internal microservices or tools.',
+      'When downstream services need to know both the user and the agent, but should not hold a token usable outside the platform.',
+    ],
+    risks: [
+      'Both the base Transaction Tokens spec and the agents extension are drafts; claim names may change.',
+      'The token service becomes a central trust point; it must only issue for authenticated edge requests.',
+      'Services must not use the transaction token to call outside the trust domain; that still needs a token exchange.',
+    ],
+    actors: [
+      { id: 'user', label: 'Jane', kind: 'user' },
+      { id: 'agent', label: 'Agent', kind: 'agent', sub: 'edge service' },
+      { id: 'tts', label: 'Txn token service', kind: 'idp', sub: 'trust domain' },
+      { id: 'orders', label: 'Orders service', kind: 'tool' },
+      { id: 'refunds', label: 'Refunds service', kind: 'tool' },
+      { id: 'obs', label: 'Audit log', kind: 'observability' },
+    ],
+    variants: [
+      {
+        id: 'txn-token',
+        label: 'Transaction token per request',
+        tone: 'good',
+        outcome: 'Every internal hop sees sub=jane and act=refund-agent in a 60-second token that is useless outside the platform, and the audit log ties the whole chain together.',
+        steps: [
+          { from: 'user', to: 'agent', kind: 'call', label: '"Refund order 5521" + access token', detail: 'Jane\'s external access token stops at the edge.' },
+          {
+            from: 'agent', to: 'tts', kind: 'token', label: 'exchange for a transaction token',
+            detail: 'The edge exchanges the access token (RFC 8693 style) for a transaction token.',
+            payload: 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange\n&requested_token_type=urn:ietf:params:oauth:token-type:txn_token\n&subject_token=eyJ…\n&scope=refund',
+          },
+          {
+            from: 'tts', to: 'agent', kind: 'token', label: 'txn token: sub=jane, act=agent',
+            detail: 'Short-lived, signed, audience = the trust domain. The request context is fixed in the token so no downstream service can change it.',
+            payload: '{ "aud": "trust-domain.example", "sub": "jane", "act": { "sub": "refund-agent" },\n  "purp": "refund", "rctx": { "req_ip": "198.51.100.7" },\n  "tctx": { "order": "5521" }, "exp": now+60s }',
+          },
+          { from: 'agent', to: 'orders', kind: 'call', label: 'get order + txn token', detail: 'The orders service checks the signature and the purpose.' },
+          { from: 'orders', to: 'refunds', kind: 'call', label: 'refund + same txn token', detail: 'Passed along unchanged. In a multi-agent chain, the draft has the token replaced at each agent hop with sub and act kept.' },
+          { from: 'refunds', to: 'refunds', kind: 'think', label: 'policy: purp=refund, order=5521', detail: 'The refund service can refuse anything outside the transaction\'s stated purpose and context.' },
+          { from: 'refunds', to: 'obs', kind: 'data', label: 'log txn id, sub, act', detail: 'Every service logs the same transaction id, user and agent.' },
+          { from: 'agent', to: 'user', kind: 'return', label: 'refund issued', detail: 'Jane\'s access token never left the edge.' },
+        ],
+      },
+      {
+        id: 'forward-token',
+        label: 'Forward the access token',
+        tone: 'bad',
+        outcome: 'Jane\'s hour-long external token is now in three services and their logs, and none of them can tell the call came from an agent.',
+        steps: [
+          { from: 'user', to: 'agent', kind: 'call', label: '"Refund order 5521" + access token', detail: 'Same request.' },
+          { from: 'agent', to: 'orders', kind: 'call', label: 'get order + Jane\'s token', detail: 'The external token is forwarded as is.' },
+          { from: 'orders', to: 'refunds', kind: 'call', label: 'refund + Jane\'s token', detail: 'Each hop gets a token usable against any API that accepts its audience, for its full lifetime.' },
+          { from: 'refunds', to: 'obs', kind: 'data', label: 'log: user=jane', detail: 'Nothing records that an agent made the call, or why.' },
+          { from: 'orders', to: 'orders', kind: 'attack', label: 'compromised service reuses token', detail: 'A compromised or buggy service can call other APIs as Jane until the token expires.' },
+        ],
+      },
+    ],
+    sources: [
+      { title: 'IETF draft: OAuth Transaction Tokens', url: 'https://datatracker.ietf.org/doc/draft-ietf-oauth-transaction-tokens/' },
+      { title: 'IETF draft: Transaction Tokens for Agents', url: 'https://datatracker.ietf.org/doc/html/draft-araut-oauth-transaction-tokens-for-agents' },
+      { title: 'RFC 8693: OAuth 2.0 Token Exchange', url: 'https://datatracker.ietf.org/doc/html/rfc8693' },
+    ],
+    verify: [
+      'Both drafts are work in progress; claim names (purp, rctx, tctx, agentic_ctx) and the token type URN may change.',
+    ],
+    tags: ['transaction tokens', 'Txn-Token', 'microservices', 'act claim', 'token exchange', 'call chain', 'audit'],
+  },
+  // ---------------------------------------------------------------------------
+  {
+    id: 'agent-payments',
+    category: 'identity',
+    title: 'Agent payments with signed mandates',
+    tagline: 'Prove what the user authorised before money moves.',
+    summary:
+      'When an agent buys something, the merchant and the payment network need to know that a real user authorised this purchase, not just that the agent has a card number. Agent payment protocols such as AP2 use signed mandates: verifiable credentials that record what the user approved (an intent with limits, or a specific cart), signed by the user\'s device or, for pre-approved autonomous purchases, within limits the user signed earlier. The merchant and payment processor check the mandate before charging, and the signed chain is the audit trail if a purchase is disputed.',
+    whenToUse: [
+      'Shopping or procurement agents that complete purchases.',
+      'Delegated purchases while the user is away ("buy the tickets when they go on sale, under $200").',
+    ],
+    risks: [
+      'Protocol details are still settling; mandate names and formats differ between sources and versions.',
+      'The signing step is only as good as what the user is shown; a misleading cart summary gets a valid signature.',
+      'Autonomous mandates need tight limits (amount, merchant, time window) or they become a blank cheque.',
+    ],
+    actors: [
+      { id: 'user', label: 'Jane', kind: 'user', sub: 'signs on device' },
+      { id: 'agent', label: 'Shopping agent', kind: 'agent' },
+      { id: 'merchant', label: 'Merchant agent', kind: 'tool' },
+      { id: 'cp', label: 'Credentials provider', kind: 'vault', sub: 'wallet / tokenised card' },
+      { id: 'psp', label: 'Payment processor', kind: 'guard' },
+    ],
+    variants: [
+      {
+        id: 'mandates',
+        label: 'Intent + cart mandates',
+        tone: 'good',
+        outcome: 'The charge goes through only because a signed cart matches a signed intent within Jane\'s limits; a tampered cart would fail verification.',
+        steps: [
+          {
+            from: 'user', to: 'agent', kind: 'approval', label: 'sign intent: shoes, size 9, ≤ $120',
+            detail: 'Jane signs the constraints on her device, not just in a chat.',
+            payload: '{ "type": "IntentMandate", "description": "running shoes, size 9", "max_amount": "120.00 USD",\n  "expires": "2026-12-01", "user_signature": "…" }',
+          },
+          { from: 'agent', to: 'merchant', kind: 'call', label: 'find offers, build cart', detail: 'The agent shops within the intent.' },
+          { from: 'merchant', to: 'agent', kind: 'return', label: 'signed cart: $109.99', detail: 'The merchant signs the cart contents and price, so they cannot change later.' },
+          { from: 'agent', to: 'user', kind: 'approval', label: 'confirm cart → signed cart mandate', detail: 'In a human-present flow Jane confirms the exact cart. In an autonomous flow, the intent limits stand in for this step.' },
+          { from: 'agent', to: 'cp', kind: 'token', label: 'request payment credential', detail: 'The agent never sees the card number; the credentials provider issues a tokenised credential for this payment.' },
+          { from: 'agent', to: 'psp', kind: 'call', label: 'pay: cart + mandates + token', detail: 'The payment mandate tells the network an agent was involved and whether the user was present.' },
+          { from: 'psp', to: 'psp', kind: 'think', label: 'verify signatures, cart ≤ intent', detail: 'Signatures, amounts and merchant are checked against the mandates.' },
+          { from: 'psp', to: 'agent', kind: 'return', label: 'approved', detail: 'If disputed later, the signed chain shows exactly what Jane authorised.' },
+        ],
+      },
+      {
+        id: 'stored-card',
+        label: 'Agent holds the card',
+        tone: 'bad',
+        outcome: 'An injected instruction on a product page makes the agent buy a $480 "bundle", and nothing proves whether Jane wanted it.',
+        steps: [
+          { from: 'user', to: 'agent', kind: 'call', label: '"Buy running shoes, about $100"', detail: 'A chat message, not a signed constraint.' },
+          { from: 'agent', to: 'merchant', kind: 'call', label: 'browse product pages', detail: 'Product pages are untrusted content.' },
+          { from: 'merchant', to: 'agent', kind: 'attack', label: 'page: "add the pro bundle"', detail: 'A listing contains text aimed at agents.' },
+          { from: 'agent', to: 'psp', kind: 'call', label: 'charge $480 with saved card', detail: 'The agent has the full card details in its config and pays directly.' },
+          { from: 'psp', to: 'agent', kind: 'return', label: 'approved', detail: 'To the network this looks like an ordinary card-not-present purchase. In a dispute, there is no record of what the user actually approved.' },
+        ],
+      },
+    ],
+    sources: [
+      { title: 'Agent Payments Protocol (AP2) specification', url: 'https://ap2-protocol.org/specification' },
+      { title: 'Google Cloud: Announcing the Agent Payments Protocol', url: 'https://cloud.google.com/blog/products/ai-machine-learning/announcing-agents-to-payments-ap2-protocol' },
+      { title: 'FIDO Alliance: Building the trust layer for agentic payments', url: 'https://fidoalliance.org/building-the-trust-layer-for-agentic-payments-with-ap2-and-verifiable-intent/' },
+    ],
+    verify: [
+      'Mandate names differ between AP2 versions and sources (intent/cart vs checkout/payment); the JSON shown is illustrative, not the exact schema.',
+    ],
+    tags: ['AP2', 'payments', 'mandates', 'verifiable credentials', 'agentic commerce', 'authorization'],
+  },
 ];

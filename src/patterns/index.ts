@@ -1,6 +1,7 @@
 import { CORE_PATTERNS } from './content/core';
 import { DATA_PATTERNS } from './content/data';
 import { IDENTITY_PATTERNS } from './content/identity';
+import { LOCAL_PATTERNS } from './content/local';
 import { ORCHESTRATION_PATTERNS } from './content/orchestration';
 import { PLATFORM_PATTERNS } from './content/platform';
 import { SECURITY_PATTERNS } from './content/security';
@@ -14,4 +15,5 @@ export const PATTERNS: Pattern[] = [
   ...DATA_PATTERNS,
   ...SECURITY_PATTERNS,
   ...PLATFORM_PATTERNS,
+  ...LOCAL_PATTERNS,
 ];

@@ -715,4 +715,91 @@ export const ORCHESTRATION_PATTERNS: Pattern[] = [
     ],
     tags: ['context engineering', 'compaction', 'subagent', 'isolation', 'long context', 'notes'],
   },
+  // ---------------------------------------------------------------------------
+  {
+    id: 'many-tools',
+    category: 'orchestration',
+    title: 'Scaling to many tools: tool search, code mode, skills',
+    tagline: 'Load tool definitions and instructions when they are needed, not on every turn.',
+    summary:
+      'Every tool schema and every page of instructions sent to the model costs tokens on every call and competes for its attention. With a handful of tools that does not matter; with several MCP servers it can be tens of thousands of tokens before the user says anything, and tool selection gets worse. Three techniques defer the load: tool search (the model searches a catalogue and only the matching definitions are loaded), code mode (tools are exposed as a code API the model writes a short program against, so intermediate results stay in the sandbox), and skills (folders of instructions where only a one-line description is always loaded and the body is read when the task matches).',
+    whenToUse: [
+      'Agents connected to many MCP servers or large APIs (dozens to thousands of operations).',
+      'Workflows that pass large intermediate results between tools, where routing them through the model wastes context.',
+      'Specialised procedures (report formats, deployment runbooks) that only some tasks need.',
+    ],
+    risks: [
+      'Search adds a round trip and can miss the right tool if descriptions are poor; keep the few most-used tools always loaded.',
+      'Code mode runs model-written code: it needs a sandbox, resource limits and the same tool permissions as before.',
+      'Skills and tool descriptions are instructions to the model; a third-party skill is a supply-chain risk like any MCP server.',
+    ],
+    actors: [
+      { id: 'user', label: 'User', kind: 'user' },
+      { id: 'agent', label: 'Agent', kind: 'agent' },
+      { id: 'llm', label: 'Model', kind: 'llm' },
+      { id: 'catalog', label: 'Tool catalogue', kind: 'search', sub: '120 tools, 6 servers' },
+      { id: 'sandbox', label: 'Code sandbox', kind: 'sandbox', sub: 'tools as a code API' },
+      { id: 'crm', label: 'CRM + sheets', kind: 'mcp' },
+    ],
+    variants: [
+      {
+        id: 'search-and-code',
+        label: 'Tool search + code mode',
+        tone: 'good',
+        outcome: 'The model sees two tool definitions and a 40-line program instead of 120 schemas and 10,000 rows, and the rows never pass through its context.',
+        steps: [
+          { from: 'user', to: 'agent', kind: 'call', label: '"Flag Q3 deals missing a close date"', detail: 'The answer needs a large CRM export filtered and written to a sheet.' },
+          { from: 'agent', to: 'llm', kind: 'call', label: 'prompt + search tool + 3 core tools', detail: 'Only the search tool and the most-used tools are loaded up front; the other definitions are deferred.' },
+          { from: 'llm', to: 'catalog', kind: 'call', label: 'search: "crm deals", "sheet write"', detail: 'The model looks up what it needs by keyword or embedding.' },
+          { from: 'catalog', to: 'llm', kind: 'return', label: '2 tool definitions loaded', detail: 'Only matching schemas are added to the context.' },
+          {
+            from: 'llm', to: 'sandbox', kind: 'call', label: 'run program against the tool API',
+            detail: 'Instead of one tool call per step with results returned to the model, the model writes code that calls the tools and filters in the sandbox.',
+            payload: 'const deals = await crm.listDeals({ quarter: "2026-Q3" });\nconst missing = deals.filter(d => !d.closeDate);\nawait sheets.append("Q3 gaps", missing.map(d => [d.id, d.owner]));\nconsole.log(missing.length);',
+          },
+          { from: 'sandbox', to: 'crm', kind: 'call', label: 'listDeals, append (10,412 rows)', detail: 'The bulk data moves between tools inside the sandbox.' },
+          { from: 'sandbox', to: 'llm', kind: 'return', label: 'stdout: 37', detail: 'Only the printed result returns to the model.' },
+          { from: 'agent', to: 'user', kind: 'return', label: '37 deals flagged, sheet updated', detail: 'Anthropic reported a drop from about 150,000 to 2,000 tokens for a similar workflow in its own example.' },
+        ],
+      },
+      {
+        id: 'skills',
+        label: 'Skills (progressive disclosure)',
+        tone: 'neutral',
+        outcome: 'Twenty skills cost about 2,000 tokens of descriptions; the one that matches is read in full only when the task needs it.',
+        steps: [
+          { from: 'agent', to: 'llm', kind: 'call', label: 'system prompt + 20 skill one-liners', detail: 'At start-up only each skill\'s name and description (around 100 tokens each) are loaded.' },
+          { from: 'user', to: 'agent', kind: 'call', label: '"Write the quarterly deal review"', detail: 'This matches the description of a "deal-review" skill.' },
+          { from: 'llm', to: 'catalog', kind: 'call', label: 'read deal-review/SKILL.md', detail: 'The model opens the skill\'s full instructions only now.' },
+          { from: 'catalog', to: 'llm', kind: 'return', label: 'instructions + template path', detail: 'Further files (templates, scripts) are read only if the instructions point to them.' },
+          { from: 'llm', to: 'sandbox', kind: 'call', label: 'run skill script on the data', detail: 'Skills can bundle scripts, so a fixed procedure runs as code instead of being re-derived each time.' },
+          { from: 'agent', to: 'user', kind: 'return', label: 'review in the house format', detail: 'Review third-party skills like code: instructions and bundled scripts both run with the agent\'s permissions.' },
+        ],
+      },
+      {
+        id: 'load-everything',
+        label: 'Every schema, every turn',
+        tone: 'bad',
+        outcome: 'About 45,000 tokens of tool schemas are resent on every call, the model picks a similar-sounding wrong tool, and 10,000 rows flow through its context.',
+        steps: [
+          { from: 'user', to: 'agent', kind: 'call', label: '"Flag Q3 deals missing a close date"', detail: 'Same task.' },
+          { from: 'agent', to: 'llm', kind: 'call', label: 'prompt + 120 tool schemas', detail: 'Every server\'s full tool list is in the context on every call.' },
+          { from: 'llm', to: 'crm', kind: 'call', label: 'crm_search_opportunities (wrong)', detail: 'With many overlapping names, selection errors go up.' },
+          { from: 'crm', to: 'llm', kind: 'data', label: '10,412 rows into the context', detail: 'Every intermediate result passes through the model, costing tokens and sometimes exceeding the window.' },
+          { from: 'llm', to: 'agent', kind: 'return', label: 'truncated, partial answer', detail: 'The task fails or silently misses rows.' },
+        ],
+      },
+    ],
+    sources: [
+      { title: 'Anthropic: Code execution with MCP', url: 'https://www.anthropic.com/engineering/code-execution-with-mcp' },
+      { title: 'Claude docs: Tool search tool', url: 'https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool' },
+      { title: 'OpenAI docs: Tool search', url: 'https://developers.openai.com/api/docs/guides/tools-tool-search' },
+      { title: 'Anthropic: Equipping agents for the real world with Agent Skills', url: 'https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills' },
+    ],
+    verify: [
+      'Token figures are from vendor examples and vary widely with the number and size of tools.',
+      'The Agent Skills engineering post URL is cited from memory.',
+    ],
+    tags: ['tool search', 'code mode', 'skills', 'progressive disclosure', 'MCP', 'context', 'defer_loading'],
+  },
 ];
